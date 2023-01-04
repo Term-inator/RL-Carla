@@ -6,8 +6,8 @@ import numpy as np
 import random
 import time
 
-from pyglet.resource import file
-from skimage.transform import resize
+# from pyglet.resource import file
+# from skimage.transform import resize
 
 import gym
 from gym import spaces
@@ -49,6 +49,7 @@ k1 = 0.5
 k2 = 0.5
 k3 = 1
 
+
 # def find_weather_presets():
 #     rgx = re.compile('.+?(?:(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])|$)')
 #     name = lambda x: ' '.join(m.group(0) for m in rgx.finditer(x))
@@ -59,6 +60,7 @@ class State:
     """
     状态类，包含状态信息
     """
+
     def __init__(self):
         self.speed = 0.0
         self.angle = 0.0
@@ -74,21 +76,22 @@ class State:
         return f'({self.speed}, {self.angle}, {self.offset}, {self.e_speed}, {self.distance}, ' \
                f'{self.e_distance}, {self.safe_distance}, {self.light_state}, {self.sl_distance})'
 
+
 class ObstacleDetector:
-    def __init__(self, parent_actor,):
+    def __init__(self, parent_actor, ):
         self.other_actor = None
         self.distance = safe_distance + 10
         self.sensor = None
         self._parent = parent_actor
         world = self._parent.get_world()
-        #获得障碍传感器
+        # 获得障碍传感器
         bp = world.get_blueprint_library().find("sensor.other.obstacle")
-        #设置障碍传感器参数
+        # 设置障碍传感器参数
         bp.set_attribute('distance', str(40.0))
         bp.set_attribute('debug_linetrace', str(True))
         bp.set_attribute('only_dynamics', str(True))
         bp.set_attribute('hit_radius', str(0.8))
-        #生成传感器
+        # 生成传感器
         self.sensor = world.spawn_actor(bp, carla.Transform(), attach_to=self._parent)
         weak_self = weakref.ref(self)
         self.sensor.listen(lambda event: ObstacleDetector._on_detected(weak_self, event))
@@ -101,6 +104,7 @@ class ObstacleDetector:
         self.distance = event.distance
         self.other_actor = event.other_actor
         # print(f'other_actor:{self.other_actor.type_id}, distance:{self.distance}')
+
 
 class CarlaEnv(gym.Env):
 
@@ -161,7 +165,6 @@ class CarlaEnv(gym.Env):
         # 定义观测空间
         self.observation_space = spaces.Box(low=-50.0, high=50.0, shape=(21,), dtype=np.float32)
         #         print(self.observation_space)
-
 
         '''
         连接Carla,并根据任务模式设置ego车辆的起点和终点
@@ -320,7 +323,7 @@ class CarlaEnv(gym.Env):
                 ego_spawn_times += 1
                 time.sleep(0.1)
             print("成功生成ego车辆！")
-        spec_loc = carla.Location(self.start[0], self.start[1], self.start[2]+5)
+        spec_loc = carla.Location(self.start[0], self.start[1], self.start[2] + 5)
         spec_rot = carla.Rotation(self.start[3], self.start[4], self.start[5])
         spec_tf = carla.Transform(spec_loc, spec_rot)
         forward_vector = spec_tf.get_forward_vector()
@@ -333,9 +336,8 @@ class CarlaEnv(gym.Env):
         self.collision_sensor.listen(lambda event: get_collision_hist(event))
 
         self.obstacle_sensor = ObstacleDetector(self.ego)
+
         # self.actors.append(self.obstacle_sensor.sensor)
-
-
 
         def get_collision_hist(event):
             impulse = event.normal_impulse
@@ -419,11 +421,11 @@ class CarlaEnv(gym.Env):
             steer = action[1]
         # 将加速度转化为刹车和油门---其中throttle [0.0, 1.0]，steer[-1,1],brake[0,1]之间的标量
         if acc > 0:
-            throttle = np.clip(acc / 3, 0, 1)  #这里除3，要看情况
+            throttle = np.clip(acc / 3, 0, 1)  # 这里除3，要看情况
             brake = 0
         else:
             throttle = 0
-            brake = np.clip(-acc / 8, 0, 1)  #这里除8，要看情况
+            brake = np.clip(-acc / 8, 0, 1)  # 这里除8，要看情况
 
         # Apply control
         act = carla.VehicleControl(throttle=float(throttle), steer=float(-steer), brake=float(brake))
@@ -446,8 +448,8 @@ class CarlaEnv(gym.Env):
 
         # state information
         info = {
-        #     'waypoints': self.waypoints,
-        #     'vehicle_front': self.vehicle_front
+            #     'waypoints': self.waypoints,
+            #     'vehicle_front': self.vehicle_front
         }
 
         # Update timesteps
@@ -490,7 +492,7 @@ class CarlaEnv(gym.Env):
     def _set_synchronous_mode(self, synchronous=True):
         self.settings.synchronous_mode = synchronous
         self.world.apply_settings(self.settings)
-    
+
     def _try_spawn_random_walker_at(self, transform):
         # 在指定位置上生成行人，参数分别是位置transform
         # 返回值：True表示成功生成，否则为False
@@ -513,7 +515,7 @@ class CarlaEnv(gym.Env):
             walker_controller_actor.set_max_speed(1 + random.random())  # max speed between 1 and 2 (default is 1.4 m/s)
             return True
         return False
-    
+
     def _try_spawn_random_vehicle_at(self, transform, number_of_wheels=[4]):
         # 在指定位置上生成车辆，参数分别是位置transform，轮子数量（4表示是汽车）
         # 返回值：True表示成功生成，否则为False
@@ -595,7 +597,7 @@ class CarlaEnv(gym.Env):
         curr_waypoint = self.map.get_waypoint(curr_transform.location)
         if curr_waypoint.is_junction and curr_waypoint.get_junction().id == 189:
             self.enter_junction = True
-                # print(curr_waypoint.get_junction().id)
+            # print(curr_waypoint.get_junction().id)
         if curr_waypoint is None:
             angle = 0
         else:
@@ -622,8 +624,6 @@ class CarlaEnv(gym.Env):
         state.sl_distance = sl_distance
         state.offset = offset
         return state
-
-
 
     def _get_obs(self):
         # 从Carla传感器中获取观测数据
@@ -767,7 +767,7 @@ class CarlaEnv(gym.Env):
         #     return r4 + r5 - r_step + r_reach
         # else:
         #     return r1 + r2 + r3 - r_step + r_reach
-        return r1 + r2 + r3  + r4 + r5 + r_step + r_reach
+        return r1 + r2 + r3 + r4 + r5 + r_step + r_reach
         # return r_speed + r_steer + r_lateral + r_step + r_reach
 
     def _get_future_wpt_angle(self, distances):
