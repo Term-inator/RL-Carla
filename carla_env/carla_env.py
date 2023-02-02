@@ -72,6 +72,8 @@ class State:
         self.light_state = None
         self.sl_distance = 50
 
+        self.coordinate = None
+
     def __repr__(self):
         return f'({self.speed}, {self.angle}, {self.offset}, {self.e_speed}, {self.distance}, ' \
                f'{self.e_distance}, {self.safe_distance}, {self.light_state}, {self.sl_distance})'
@@ -140,6 +142,8 @@ class CarlaEnv(gym.Env):
 
         self.code_mode = params['code_mode']
         self.spectator = None
+
+        self.store_coordinate = params['store_coordinate']  # 是否存储坐标
 
         '''
         定义动作空间和观测空间
@@ -255,32 +259,32 @@ class CarlaEnv(gym.Env):
         self._set_synchronous_mode(False)
 
         # 4.在随机位置上生成周围车辆
-        random.shuffle(self.vehicle_spawn_points)
-        count = self.number_of_vehicles
-        if count > 0:
-            for spawn_point in self.vehicle_spawn_points:
-                if self._try_spawn_random_vehicle_at(spawn_point, number_of_wheels=[4]):
-                    count -= 1
-                if count <= 0:
-                    break
-        while count > 0:
-            if self._try_spawn_random_vehicle_at(random.choice(self.vehicle_spawn_points), number_of_wheels=[4]):
-                count -= 1
-        print("成功生成周围车辆！")
+        # random.shuffle(self.vehicle_spawn_points)
+        # count = self.number_of_vehicles
+        # if count > 0:
+        #     for spawn_point in self.vehicle_spawn_points:
+        #         if self._try_spawn_random_vehicle_at(spawn_point, number_of_wheels=[4]):
+        #             count -= 1
+        #         if count <= 0:
+        #             break
+        # while count > 0:
+        #     if self._try_spawn_random_vehicle_at(random.choice(self.vehicle_spawn_points), number_of_wheels=[4]):
+        #         count -= 1
+        # print("成功生成周围车辆！")
 
         # 5.Spawn pedestrians，在随机位置上生成行人
-        random.shuffle(self.walker_spawn_points)
-        count = self.number_of_walkers
-        if count > 0:
-            for spawn_point in self.walker_spawn_points:
-                if self._try_spawn_random_walker_at(spawn_point):
-                    count -= 1
-                if count <= 0:
-                    break
-        while count > 0:
-            if self._try_spawn_random_walker_at(random.choice(self.walker_spawn_points)):
-                count -= 1
-        print("成功生成周围行人！")
+        # random.shuffle(self.walker_spawn_points)
+        # count = self.number_of_walkers
+        # if count > 0:
+        #     for spawn_point in self.walker_spawn_points:
+        #         if self._try_spawn_random_walker_at(spawn_point):
+        #             count -= 1
+        #         if count <= 0:
+        #             break
+        # while count > 0:
+        #     if self._try_spawn_random_walker_at(random.choice(self.walker_spawn_points)):
+        #         count -= 1
+        # print("成功生成周围行人！")
 
         # 得到周围车辆、行人的多边形边界-->可以用于判断ego车是否会与周围车辆重合
         self.vehicle_polygons = []
@@ -299,7 +303,8 @@ class CarlaEnv(gym.Env):
             self.route_id = 0
         elif self.task_mode == 'Long' or self.task_mode == 'Lane' or self.task_mode == 'Lane_test':
             if self.code_mode == 'train':
-                self.route_id = np.random.randint(0, 4)
+                # self.route_id = np.random.randint(0, 4)
+                self.route_id = 0
             elif self.code_mode == 'test':
                 self.route_id = self.route_deterministic_id
                 self.route_deterministic_id = (self.route_deterministic_id + 1) % 4
@@ -324,7 +329,8 @@ class CarlaEnv(gym.Env):
                 time.sleep(0.1)
             print("成功生成ego车辆！")
         spec_loc = carla.Location(self.start[0], self.start[1], self.start[2] + 5)
-        spec_rot = carla.Rotation(self.start[3], self.start[4], self.start[5])
+        # spec_rot = carla.Rotation(self.start[3], self.start[4], self.start[5])
+        spec_rot = self.ego.get_transform().rotation
         spec_tf = carla.Transform(spec_loc, spec_rot)
         forward_vector = spec_tf.get_forward_vector()
         spec_tf.location += forward_vector * (-5)
@@ -430,6 +436,11 @@ class CarlaEnv(gym.Env):
         # Apply control
         act = carla.VehicleControl(throttle=float(throttle), steer=float(-steer), brake=float(brake))
         self.ego.apply_control(act)
+        if self.time_step > min(300, self.max_time_episode / 3):
+            ego_transform = self.ego.get_transform()
+            self.spectator.set_transform(
+                carla.Transform(ego_transform.location + carla.Location(z=50),
+                                carla.Rotation(-90)))
 
         self.world.tick()
 
@@ -448,8 +459,10 @@ class CarlaEnv(gym.Env):
 
         # state information
         info = {
-            #     'waypoints': self.waypoints,
-            #     'vehicle_front': self.vehicle_front
+            # 'waypoints': self.waypoints,
+            # 'vehicle_front': self.vehicle_front
+            'crashed': self.isCollided,
+            'offroad': self.isOutOfLane,
         }
 
         # Update timesteps
@@ -457,6 +470,9 @@ class CarlaEnv(gym.Env):
         self.total_step += 1
         #         print("time_step：", self.time_step, "total_step:", self.total_step)
         obs = self._get_obs()
+        if self.store_coordinate:
+            info['coordinate'] = self._get_ego_pos()
+        self._out_of_lane()
         reward = self._get_reward()
         terminal = self._terminal()
         #         print("obs:", obs, "\nreward:", reward, "\nterminal:", terminal)
@@ -881,6 +897,12 @@ class CarlaEnv(gym.Env):
             transform.location.z = start[2]
         return transform
 
+    def _out_of_lane(self):
+        if abs(self.state_info['lateral_dist_t']) > 1.2 + self.out_lane_thres:
+            self.isOutOfLane = True
+        else:
+            self.isOutOfLane = False
+
     def _terminal(self):
         ego_x, ego_y = get_pos(self.ego)
 
@@ -900,8 +922,8 @@ class CarlaEnv(gym.Env):
             return True
 
         # If out of lane，超出车道
-        if abs(self.state_info['lateral_dist_t']) > 1.2:
-            # print("lane invasion happened! Episode Done.")
+        if self.isOutOfLane:
+            print("lane invasion happened! Episode Done.")
             if self.state_info['lateral_dist_t'] > 0:
                 self.logger.debug(
                     'Left Lane invasion! Episode cost %d steps in route %d.' %
@@ -910,7 +932,6 @@ class CarlaEnv(gym.Env):
                 self.logger.debug(
                     'Right Lane invasion! Episode cost %d steps in route %d.' %
                     (self.time_step, self.route_id))
-            self.isOutOfLane = True
             return True
 
         # If at destination，到达目的地

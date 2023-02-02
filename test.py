@@ -3,6 +3,9 @@ import os
 import sys
 from collections import namedtuple
 
+from ICM import ICM, ICMType
+from carla_env.carla_env import State
+
 try:
     sys.path.append('D:/Programs/Carla/CARLA_0.9.13/WindowsNoEditor/PythonAPI/carla')
 except IndexError:
@@ -15,6 +18,9 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.distributions import Normal
+from torch.autograd import Variable
+import torch.nn.functional as F
+from torch import FloatTensor
 import random
 import time
 import numpy as np
@@ -30,129 +36,11 @@ SHOW_PREVIEW = True
 
 SECOND_PER_EPISODE = 10
 
-
 torch.cuda.empty_cache()
 use_cuda = torch.cuda.is_available()
 print(use_cuda)
 device = torch.device("cuda:0" if use_cuda else "cpu")
 filePath = 'all.csv'
-
-
-# class Car_Env():
-#     SHOW_CAM = SHOW_PREVIEW
-#     STEER_AMT = 1.0
-#     im_width = IM_WIDTH
-#     im_height = IM_HEIGHT
-#     front_camera = None
-#
-#     def __init__(self):
-#         self.client = carla.Client('localhost', 2000)
-#         self.client.set_timeout(10.0)
-#         self.world = self.client.get_world()
-#         self.blueprint_library = self.world.get_blueprint_library()
-#         self.model_3 = self.blueprint_library.filter('model3')[0]
-#
-#     def reset(self):
-#         self.collision_hist = []
-#         self.radar_hist = []
-#         self.actor_list = []
-#         self.transform = self.world.get_map().get_spawn_points()[100]  # spwan_points共265个点，选第一个点作为初始化小车的位置
-#         self.vehicle = self.world.spawn_actor(self.model_3, self.transform)
-#
-#         self.actor_list.append(self.vehicle)
-#
-#         self.rgb_cam = self.blueprint_library.find('sensor.camera.rgb')
-#         self.rgb_cam.set_attribute('image_size_x', f'{self.im_width}')
-#         self.rgb_cam.set_attribute('image_size_y', f'{self.im_height}')
-#         self.rgb_cam.set_attribute('fov', f'110')
-#
-#         transform = carla.Transform(carla.Location(x=2.5, z=0.7))
-#         self.sensor = self.world.spawn_actor(self.rgb_cam, transform, attach_to=self.vehicle)
-#         self.actor_list.append(self.sensor)
-#         self.sensor.listen(lambda data: self.process_img(data))
-#
-#         self.vehicle.apply_control(carla.VehicleControl(throttle=0.0, brake=0.0))
-#
-#         time.sleep(4)
-#
-#         # collision sensor
-#         colsensor = self.blueprint_library.find('sensor.other.collision')
-#         self.colsensor = self.world.spawn_actor(colsensor, transform, attach_to=self.vehicle)
-#         self.actor_list.append(self.colsensor)
-#         self.colsensor.listen(lambda event: self.collision_data(event))
-#
-#         # target_transform 定义驾驶目的地坐标
-#         self.target_transform = self.world.get_map().get_spawn_points()[101]
-#         self.target_dis = self.target_transform.location.distance(self.vehicle.get_location())
-#
-#         while self.front_camera is None:
-#             time.sleep(0.01)
-#
-#         self.episode_start = time.time()
-#         self.vehicle.apply_control(carla.VehicleControl(throttle=0.0, brake=0.0))
-#
-#         return self.front_camera
-#
-#     def collision_data(self, event):
-#         self.collision_hist.append(event)
-#
-#     def radar_data(self, mesure):
-#         self.radar_hist.append(mesure)
-#
-#     def process_img(self, image):
-#         i = np.array(image.raw_data)
-#         i2 = i.reshape((self.im_height, self.im_width, 4))
-#         i3 = i2[:, :, : 3]
-#         if self.SHOW_CAM:
-#             cv2.imshow("", i3)
-#             cv2.waitKey(1)
-#         self.front_camera = i3
-#         return i3 / 255.0
-#
-#     def step(self, action):
-#         last_dis = self.target_dis
-#         if action == 0:
-#             self.vehicle.apply_control(
-#                 carla.VehicleControl(throttle=1.0, steer=0.0, brake=0.0, hand_brake=False, reverse=False))
-#         elif action == 1:
-#             self.vehicle.apply_control(
-#                 carla.VehicleControl(throttle=0.5, steer=-1, brake=0.0, hand_brake=False, reverse=False))
-#         elif action == 2:
-#             self.vehicle.apply_control(
-#                 carla.VehicleControl(throttle=0.5, steer=1, brake=0.0, hand_brake=False, reverse=False))
-#         elif action == 4:
-#             self.vehicle.apply_control(
-#                 carla.VehicleControl(throttle=0.0, steer=0.0, brake=0.5, hand_brake=False, reverse=False))
-#         else:
-#             self.vehicle.apply_control(
-#                 carla.VehicleControl(throttle=1.0, steer=0.0, brake=0.0, hand_brake=False, reverse=True))
-#
-#         self.target_dis = self.target_transform.location.distance(self.vehicle.get_location())
-#
-#         v = self.vehicle.get_velocity()
-#         kmh = int(3.6 * math.sqrt(v.x ** 2 + v.y ** 2 + v.z ** 2))
-#         if len(self.collision_hist) != 0:
-#             done = True
-#             reward = -200
-#         elif last_dis < self.target_dis:  # 距离目标越来越远了
-#             done = False
-#             reward = -1
-#         else:
-#             done = False
-#             reward = 1
-#
-#         if self.episode_start + SECOND_PER_EPISODE < time.time():
-#             done = True
-#         time.sleep(1)
-#         return self.front_camera, reward, done, None
-
-
-import torch
-import torch.nn as nn
-from torch.autograd import Variable
-import torch.nn.functional as F
-
-from torch import FloatTensor
 
 Tensor = FloatTensor
 
@@ -162,6 +50,17 @@ TARGET_NETWORK_REPLACE_FREQ = 100  # How frequently target netowrk updates
 MEMORY_CAPACITY = 200
 BATCH_SIZE = 32
 LR = 0.01  # learning rate
+
+
+def get_cost(info, state, action, done, last_action=None, last_state=None):
+    """ define your risk function here! """
+    cost = 0
+    if info["crashed"]:
+        cost = 100
+    elif info["offroad"]:
+        cost = 10
+
+    return cost
 
 
 class ValueNetwork(nn.Module):
@@ -211,6 +110,23 @@ class PolicyNetwork(nn.Module):
         state = torch.FloatTensor(state).unsqueeze(0).to(device)
         action = self.forward(state)
         return action.detach().cpu().numpy()[0]
+
+
+class Risk(nn.Module):
+    def __init__(self, state_dim, action_dim, hidden_dim):
+        super(Risk, self).__init__()
+        self.fc = nn.Sequential(
+                nn.Linear(state_dim+action_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, action_dim),
+        )
+
+    def forward(self, state, action):
+        state_action = torch.cat([state, action], 1)
+        risk_value = self.fc(state_action)
+        return risk_value
 
 
 class OUNoise(object):
@@ -263,24 +179,29 @@ class ReplayBuffer:
         return len(self.buffer)
 
 
-class LSTMPrediction(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim):
-        super(LSTMPrediction, self).__init__()
-        self.hidden_dim = hidden_dim
+class ReplayBufferRisk:
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.buffer = []
+        self.position = 0
 
-        self.lstm = nn.LSTM(input_dim, hidden_dim)
+    def push(self, state, action, reward, next_state, done, cost):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.position] = (state, action, reward, next_state, done, cost)
+        self.position = (self.position + 1) % self.capacity
 
-        # The linear layer that maps from hidden state space to tag space
-        self.fc = nn.Linear(hidden_dim, output_dim)
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        state, action, reward, next_state, done, cost = map(np.stack, zip(*batch))
+        return state, action, reward, next_state, done, cost
 
-    def forward(self, x):
-        x, _ = self.lstm(x)
-        x = self.fc(x)
-        return x
+    def __len__(self):
+        return len(self.buffer)
 
 
 class DDPG(object):
-    def __init__(self, action_dim, state_dim, hidden_dim):
+    def __init__(self, config, action_dim, state_dim, hidden_dim):
         super(DDPG, self).__init__()
         self.action_dim, self.state_dim, self.hidden_dim = action_dim, state_dim, hidden_dim
         self.batch_size = 50
@@ -291,6 +212,8 @@ class DDPG(object):
         self.replay_buffer_size = 10000
         self.value_lr = 0.001
         self.policy_lr = 0.0001
+        self.use_risk = config['risk']
+        self.risk_lr = 0.001
 
         self.value_net = ValueNetwork(state_dim, action_dim, hidden_dim).to(device)
         self.policy_net = PolicyNetwork(state_dim, action_dim, hidden_dim).to(device)
@@ -309,32 +232,30 @@ class DDPG(object):
 
         self.value_criterion = nn.MSELoss()
 
-        self.replay_buffer = ReplayBuffer(self.replay_buffer_size)
+        if self.use_risk:
+            self.risk = Risk(state_dim, action_dim, hidden_dim).to(device)
+            self.risk_target = Risk(state_dim, action_dim, hidden_dim).to(device)
 
-        # ICM
-        # self.predict_module = nn.Linear(state_dim + action_dim, state_dim).to(device)
-        # self.inv_predict_module = nn.Linear(state_dim + state_dim, action_dim).to(device)
-        self.predict_module = LSTMPrediction(state_dim + action_dim, hidden_dim, state_dim).to(device)
-        self.inv_predict_module = LSTMPrediction(state_dim + state_dim, hidden_dim, action_dim).to(device)
+            self.risk_optimizer = optim.Adam(self.risk.parameters(), lr=self.risk_lr)
+            # self.risk_target.load_state_dict(self.risk.state_dict())
+
+            self.replay_buffer = ReplayBufferRisk(self.replay_buffer_size)
+        else:
+            self.replay_buffer = ReplayBuffer(self.replay_buffer_size)
 
     def ddpg_update(self):
-        state, action, reward, next_state, done = self.replay_buffer.sample(self.batch_size)
+        if self.use_risk:
+            state, action, reward, next_state, done, cost = self.replay_buffer.sample(self.batch_size)
+        else:
+            state, action, reward, next_state, done = self.replay_buffer.sample(self.batch_size)
 
         state = torch.FloatTensor(state).to(device)
         next_state = torch.FloatTensor(next_state).to(device)
         action = torch.FloatTensor(action).to(device)
         reward = torch.FloatTensor(reward).unsqueeze(1).to(device)
         done = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(device)
-
-        # ICM
-        pred_next_state = self.predict_module(torch.cat((state, action), 1))
-        pred_action = self.inv_predict_module(torch.cat((state, next_state), 1))
-        forward_loss = F.mse_loss(pred_next_state, next_state)
-        inverse_loss = F.cross_entropy(pred_action, action)
-        intrinsic_reward = 0.1 * forward_loss
-        reward += intrinsic_reward
-        forward_loss.backward()
-        inverse_loss.backward()
+        if self.use_risk:
+            cost = torch.FloatTensor(np.array(cost)).unsqueeze(1).to(device)
 
         policy_loss = self.value_net(state, self.policy_net(state))
         policy_loss = -policy_loss.mean()
@@ -355,6 +276,15 @@ class DDPG(object):
         value_loss.backward()
         self.value_optimizer.step()
 
+        if self.use_risk:
+            target_risk = self.risk_target(next_state, next_action)
+            target_risk = cost + ((1 - done) * self.gamma * target_risk).detach()
+            current_risk = self.risk(state, action)
+            loss_risk = F.mse_loss(current_risk, target_risk)
+            self.risk_optimizer.zero_grad()
+            loss_risk.backward()
+            self.risk_optimizer.step()
+
         for target_param, param in zip(self.target_value_net.parameters(), self.value_net.parameters()):
             target_param.data.copy_(
                 target_param.data * (1.0 - self.soft_tau) + param.data * self.soft_tau
@@ -365,8 +295,19 @@ class DDPG(object):
                 target_param.data * (1.0 - self.soft_tau) + param.data * self.soft_tau
             )
 
-        return intrinsic_reward.item()
 
+class Trajectory:
+    def __init__(self, state, coordinate, action, cost=None):
+        self.state = state
+        self.coordinate = coordinate
+        self.action = action
+        self.cost = cost
+
+    def to_list(self):
+        # print(self.state, self.action)
+        if self.cost is None:
+            return np.concatenate((self.state, self.coordinate, self.action), axis=0)
+        return np.concatenate((self.state, self.coordinate, self.action, [self.cost]), axis=0)
 
 
 def main():
@@ -375,7 +316,7 @@ def main():
         'dt': 0.1,  # time interval between two frames
         'port': 2000,  # connection port
         'task_mode': TASK_MODE,  # mode of the task, [random, roundabout (only for Town03)]
-        'max_time_episode': 1000,  # maximum timesteps per episode
+        'max_time_episode': 1000,  # 1000,  # maximum timesteps per episode
         'obs_size': [160, 100],  # screen size of bird-eye render
         'desired_speed': 8,  # desired speed (m/s)
         'max_ego_spawn_times': 200,  # maximum times to spawn ego vehicle
@@ -389,7 +330,7 @@ def main():
 
         'number_of_vehicles': 10,
         'number_of_walkers': 3,
-        'out_lane_thres': 2.0,  # threshold for out of lane
+        'out_lane_thres': 0.5,  # 2.0,  # threshold for out of lane
 
         'code_mode': 'train',
         'discrete': False,  # whether to use discrete control space
@@ -401,6 +342,14 @@ def main():
         'ego_vehicle_filter': 'vehicle.lincoln*',  # filter for defining ego vehicle
         #         'town': 'Town03',  # which town to simulate
         #         'pixor_size': 64,  # size of the pixor labels
+
+        'icm': False,
+        'icm_type': [ICMType.LINEAR, ICMType.LSTM, ICMType.DNN][2],
+        'icm_scale': 0.001,
+        'icm_only': False,
+
+        'store_coordinate': True,
+        'risk': False
     }
     env = gym.make('CarlaEnv-v0', params=params)
     env.reset()
@@ -417,9 +366,14 @@ def main():
     # print(env.action_space)
     hidden_dim = 256
 
-    ddpg = DDPG(action_dim, state_dim, hidden_dim)
+    ddpg = DDPG(params, action_dim, state_dim, hidden_dim)
 
-    max_steps = 1 # 30000
+    if params['icm']:
+        # ICM
+        icm_module = ICM(ICMType.LSTM, state_dim, action_dim).to(device)
+
+    max_steps = 20000
+    trajectorys = []
     rewards = []
     batch_size = 54
     VAR = 1  # control exploration
@@ -429,8 +383,13 @@ def main():
         print("================第{}回合======================================".format(step + 1))
         state = env.reset()
         state = torch.flatten(torch.tensor(state))
+        # 开始状态
+        if params['risk']:
+            trajectorys.append(Trajectory(np.zeros(21), [0.0, 0.0], [0.0, 0.0], 0).to_list())
+        else:
+            trajectorys.append(Trajectory(np.zeros(19), [0.0, 0.0], [0.0, 0.0]).to_list())
         ou_noise.reset()
-        intrinsic_reward = 0
+        episode_intrinsic_reward = 0
         episode_reward = 0
         done = False
         st = 0
@@ -441,30 +400,76 @@ def main():
             action[0] = np.clip(np.random.normal(action[0], VAR), -1, 1)  # 在动作选择上添加随机噪声
             action[1] = np.clip(np.random.normal(action[1], VAR), -0.2, 0.2)  # 在动作选择上添加随机噪声
             # action = ou_noise.get_action(action, st)
-            next_state, reward, done, _ = env.step(action)  # 奖励函数的更改需要自行打开安装的库在本地的位置进行修改
+            next_state, reward, done, info = env.step(action)  # 奖励函数的更改需要自行打开安装的库在本地的位置进行修改
             next_state = torch.flatten(torch.tensor(next_state))
+            intrinsic_reward = 0
             if reward == 0.0:  # 车辆出界，回合结束
                 reward = -10
                 done = True
-            ddpg.replay_buffer.push(state, action, reward, next_state, done)
+
+            if params['risk']:
+                """Define the cost"""
+                cost = get_cost(info, next_state, action, done)
+
+            if params['icm']:
+                # ICM
+                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
+                next_state_tensor = torch.FloatTensor(next_state).unsqueeze(0).to(device)
+                action_tensor = torch.FloatTensor(action).unsqueeze(0).to(device)
+                pred_next_state, pred_action = icm_module(state_tensor, next_state_tensor, action_tensor)
+                # pred_next_state = predict_module(torch.cat((state_tensor, action_tensor), 1))
+                # pred_action = inv_predict_module(torch.cat((state_tensor, next_state_tensor), 1))
+                forward_loss = F.mse_loss(pred_next_state, next_state_tensor).to(device)
+                inverse_loss = F.cross_entropy(pred_action, action_tensor)
+                intrinsic_reward = params['icm_scale'] * forward_loss.item()
+                episode_intrinsic_reward += intrinsic_reward
+                forward_loss.backward()
+                inverse_loss.backward()
+
+            if params['icm_only']:
+                reward = 0  # 关闭外部奖励
+            if params['risk']:
+                ddpg.replay_buffer.push(state, action, reward + intrinsic_reward, next_state, done, cost)
+            else:
+                ddpg.replay_buffer.push(state, action, reward + intrinsic_reward, next_state, done)
 
             if len(ddpg.replay_buffer) > batch_size:
                 VAR *= .9995  # decay the action randomness
-                intrinsic_reward = ddpg.ddpg_update()
+                ddpg.ddpg_update()
+
+            if params['risk']:
+                trajectorys.append(Trajectory(state.numpy(), info['coordinate'], action, cost).to_list())
+            else:
+                trajectorys.append(Trajectory(state.numpy(), info['coordinate'], action).to_list())
 
             state = next_state
             episode_reward += reward
             env.render()
             st = st + 1
 
-        rewards.append([episode_reward, intrinsic_reward])
-        print("回合奖励为：{}, {}".format(episode_reward, intrinsic_reward))
+        rewards.append([episode_reward, episode_intrinsic_reward])
+        if params['risk']:
+            trajectorys.append(Trajectory(np.zeros(21), [1, 1], [1, 1], 1).to_list())
+        else:
+            trajectorys.append(Trajectory(np.zeros(19), [1, 1], [1, 1]).to_list())
+        print("回合奖励为：{}, {}".format(episode_reward, episode_intrinsic_reward))
 
     env.close()
-
+    # print(states)
     df1 = pd.DataFrame(data=rewards,
                        columns=['reward', 'icm_reward'])
     df1.to_csv(filePath, index=False)
+    columns = ['velocity_t_x', 'velocity_t_y', 'accel_t_x', 'accel_t_y',
+                'delta_yaw_t', 'dyaw_dt_t', 'lateral_dist_t',
+                'action_last_accel', 'accel_last_steer',
+                'future_angles_0', 'future_angles_1', 'future_angles_3',
+                'speed', 'angle', 'offset', 'e_speed', 'distance',
+                'e_distance', 'safe_distance', 'light_state', 'sl_distance',
+                'x', 'y', 'action_acc', 'action_steer']
+    if params['risk']:
+        columns.append('cost')
+    df2 = pd.DataFrame(data=trajectorys, columns=columns)
+    df2.to_csv('trajectory.csv', index=False)
     torch.save(ddpg.value_net.state_dict(), 'value_net.pt')
     torch.save(ddpg.policy_net.state_dict(), 'policy_net.pt')
     torch.save(ddpg.target_value_net.state_dict(), 'target_value_net.pt')
@@ -473,19 +478,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
-# if __name__ == '__main__':
-#     env = Car_Env()
-#     s = env.reset()
-#     dqn = DQN()
-#     count = 0
-#     for i in range(2000):
-#         a = dqn.choose_action(s)
-#         s_, r, done, info = env.step(a)
-#         dqn.push_memory(s, a, r, s_)
-#         s = s_
-#         if (dqn.position % (MEMORY_CAPACITY - 1)) == 0:
-#             dqn.learn()
-#             count += 1
-#             print('learned times:', count)
