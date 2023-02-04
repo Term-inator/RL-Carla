@@ -1,7 +1,10 @@
+import copy
 import glob
 import os
 import sys
 from collections import namedtuple
+
+from PIL import Image
 
 from ICM import ICM, ICMType
 from carla_env.carla_env import State
@@ -29,6 +32,7 @@ import math
 import gym
 import pandas as pd
 import carla_env
+from encoder import encode_image
 
 IM_WIDTH = 80
 IM_HEIGHT = 60
@@ -310,6 +314,11 @@ class Trajectory:
         return np.concatenate((self.state, self.coordinate, self.action, [self.cost]), axis=0)
 
 
+def get_info_from_obs(obs, pixor=False):
+    if not pixor:
+        return obs['camera'], obs['state']
+
+
 def main():
     TASK_MODE = 'Lane'
     params = {
@@ -330,7 +339,7 @@ def main():
 
         'number_of_vehicles': 10,
         'number_of_walkers': 3,
-        'out_lane_thres': 0.5,  # 2.0,  # threshold for out of lane
+        'out_lane_thres': 0,  # 2.0,  # threshold for out of lane
 
         'code_mode': 'train',
         'discrete': False,  # whether to use discrete control space
@@ -343,13 +352,16 @@ def main():
         #         'town': 'Town03',  # which town to simulate
         #         'pixor_size': 64,  # size of the pixor labels
 
-        'icm': False,
+        'icm': True,
         'icm_type': [ICMType.LINEAR, ICMType.LSTM, ICMType.DNN][2],
-        'icm_scale': 0.001,
-        'icm_only': False,
+        'icm_scale': 500,  # 0.001,
+        'icm_only': True,
 
         'store_coordinate': True,
-        'risk': False
+        'risk': False,
+
+        # 'display_size': 500,
+        'pixor': False,
     }
     env = gym.make('CarlaEnv-v0', params=params)
     env.reset()
@@ -359,20 +371,21 @@ def main():
     # print(env.observation_space.shape[0])
     # print(env.action_space.shape[0])
 
-    state_dim = env.observation_space.shape[0]
+    state_dim = env.observation_space['state'].shape[0]
     action_dim = env.action_space.shape[0]
     # print("状态维度" + str(state_dim))
     # print("动作维度" + str(action_dim))
     # print(env.action_space)
-    hidden_dim = 256
+    hidden_dim = 768
 
     ddpg = DDPG(params, action_dim, state_dim, hidden_dim)
 
     if params['icm']:
         # ICM
-        icm_module = ICM(ICMType.LSTM, state_dim, action_dim).to(device)
+        # icm_module = ICM(params['icm_type'], state_dim, action_dim).to(device)
+        icm_module = ICM(params['icm_type'], 512, action_dim).to(device)
 
-    max_steps = 20000
+    max_steps = 2000
     trajectorys = []
     rewards = []
     batch_size = 54
@@ -381,7 +394,11 @@ def main():
 
     for step in range(max_steps):
         print("================第{}回合======================================".format(step + 1))
-        state = env.reset()
+        obs = env.reset()
+        camera, state = get_info_from_obs(obs, pixor=params['pixor'])
+        camera = Image.fromarray(camera)
+        # camera.show()
+        camera_feature = encode_image(camera)
         state = torch.flatten(torch.tensor(state))
         # 开始状态
         if params['risk']:
@@ -400,7 +417,10 @@ def main():
             action[0] = np.clip(np.random.normal(action[0], VAR), -1, 1)  # 在动作选择上添加随机噪声
             action[1] = np.clip(np.random.normal(action[1], VAR), -0.2, 0.2)  # 在动作选择上添加随机噪声
             # action = ou_noise.get_action(action, st)
-            next_state, reward, done, info = env.step(action)  # 奖励函数的更改需要自行打开安装的库在本地的位置进行修改
+            next_obs, reward, done, info = env.step(action)  # 奖励函数的更改需要自行打开安装的库在本地的位置进行修改
+            next_camera, next_state = get_info_from_obs(next_obs, pixor=params['pixor'])
+            next_camera = Image.fromarray(next_camera)
+            next_camera_feature = encode_image(next_camera)
             next_state = torch.flatten(torch.tensor(next_state))
             intrinsic_reward = 0
             if reward == 0.0:  # 车辆出界，回合结束
@@ -416,15 +436,17 @@ def main():
                 state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
                 next_state_tensor = torch.FloatTensor(next_state).unsqueeze(0).to(device)
                 action_tensor = torch.FloatTensor(action).unsqueeze(0).to(device)
-                pred_next_state, pred_action = icm_module(state_tensor, next_state_tensor, action_tensor)
+                # pred_next_state, pred_action = icm_module(state_tensor, next_state_tensor, action_tensor)
+                pred_next_state, pred_action = icm_module(camera_feature, next_camera_feature, action_tensor)
                 # pred_next_state = predict_module(torch.cat((state_tensor, action_tensor), 1))
                 # pred_action = inv_predict_module(torch.cat((state_tensor, next_state_tensor), 1))
-                forward_loss = F.mse_loss(pred_next_state, next_state_tensor).to(device)
-                inverse_loss = F.cross_entropy(pred_action, action_tensor)
+                # forward_loss = F.mse_loss(pred_next_state, next_state_tensor).to(device)
+                forward_loss = F.mse_loss(pred_next_state, next_camera_feature).to(device)
+                inverse_loss = F.cross_entropy(pred_action, action_tensor).to(device)
                 intrinsic_reward = params['icm_scale'] * forward_loss.item()
                 episode_intrinsic_reward += intrinsic_reward
-                forward_loss.backward()
-                inverse_loss.backward()
+                forward_loss.backward(retain_graph=True)
+                inverse_loss.backward(retain_graph=True)
 
             if params['icm_only']:
                 reward = 0  # 关闭外部奖励
@@ -443,6 +465,7 @@ def main():
                 trajectorys.append(Trajectory(state.numpy(), info['coordinate'], action).to_list())
 
             state = next_state
+            camera = next_camera
             episode_reward += reward
             env.render()
             st = st + 1
