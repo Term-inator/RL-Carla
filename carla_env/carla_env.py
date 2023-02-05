@@ -332,8 +332,8 @@ class CarlaEnv(gym.Env):
             self.route_id = 0
         elif self.task_mode == 'Long' or self.task_mode == 'Lane' or self.task_mode == 'Lane_test':
             if self.code_mode == 'train':
-                # self.route_id = np.random.randint(0, 4)
-                self.route_id = 0
+                self.route_id = np.random.randint(0, 4)
+                # self.route_id = 0
             elif self.code_mode == 'test':
                 self.route_id = self.route_deterministic_id
                 self.route_deterministic_id = (self.route_deterministic_id + 1) % 4
@@ -348,10 +348,9 @@ class CarlaEnv(gym.Env):
             if ego_spawn_times > self.max_ego_spawn_times:
                 self.reset()
             transform = self._set_carla_transform(self.start)  # 从起点生成ego车辆
-            # if self.code_mode == 'train':
-            #     # 如果处于训练模式下，则在指定路段的随机位置生成ego车辆
-            #     transform = self._get_random_position_between(start=self.start, dest=self.dest, transform=transform)
-            # transform = self.get_position(self.start, 80)
+            if self.code_mode == 'train':
+                # 如果处于训练模式下，则在指定路段的随机位置生成ego车辆
+                transform = self._get_random_position_between(start=self.start, dest=self.dest, transform=transform)
             if self._try_spawn_ego_vehicle_at(transform): # and self._try_spawn_random_vehicle_at(self.get_position(self.start, 30)):
                 break
             else:
@@ -910,25 +909,28 @@ class CarlaEnv(gym.Env):
         if self.reachDest:
             r_reach = 300.0
         ###################
-        # reward for speed tracking
+        # # reward for speed tracking
         v = self.ego.get_velocity()
         speed = np.sqrt(v.x ** 2 + v.y ** 2)
-        delta_speed = -abs(speed - self.desired_speed)
-        r_speed = -delta_speed ** 2 / 5.0
-
-        # reward for steering:
-        delta_yaw, _, _ = self._get_delta_yaw()
-        r_steer = -100 * (delta_yaw * np.pi / 180) ** 2
-
-        # reward for action smoothness
-        # r_action_regularized = -5 * np.linalg.norm(action) ** 2
-
-        # cost for lateral acceleration
-        # r_lat = - abs(self.ego.get_control().steer) * lspeed_lon ** 2
-
-        # reward for lateral distance to the center of road
-        lateral_dist = self.state_info['lateral_dist_t']
-        r_lateral = -10.0 * lateral_dist ** 2
+        # delta_speed = -abs(speed - self.desired_speed)
+        # r_speed = -delta_speed ** 2 / 5.0
+        r_speed = 0
+        if speed < 1:
+            r_speed = -500
+        #
+        # # reward for steering:
+        # delta_yaw, _, _ = self._get_delta_yaw()
+        # r_steer = -100 * (delta_yaw * np.pi / 180) ** 2
+        #
+        # # reward for action smoothness
+        # # r_action_regularized = -5 * np.linalg.norm(action) ** 2
+        #
+        # # cost for lateral acceleration
+        # # r_lat = - abs(self.ego.get_control().steer) * lspeed_lon ** 2
+        #
+        # # reward for lateral distance to the center of road
+        # lateral_dist = self.state_info['lateral_dist_t']
+        # r_lateral = -10.0 * lateral_dist ** 2
         ###################
 
         r4 = - (k1 * math.sin(math.radians(state.angle)) + k2 * abs(state.offset))
@@ -959,7 +961,8 @@ class CarlaEnv(gym.Env):
         # else:
         #     return r1 + r2 + r3 - r_step + r_reach
         # return r1 + r2 + r3 + r4 + r5 + r_step + r_reach
-        return r_speed + r_steer + r_lateral + r_step + r_reach
+        # return r_speed + r_steer + r_lateral + r_step + r_reach
+        return r1 + r2 + r3 + r4 + r5 + r_step + r_reach + r_speed
 
     def _get_future_wpt_angle(self, distances):
         angles = []

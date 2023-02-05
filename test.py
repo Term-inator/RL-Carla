@@ -67,9 +67,9 @@ def get_cost(info, state, action, done, last_action=None, last_state=None):
     return cost
 
 
-class ValueNetwork(nn.Module):
+class Critic(nn.Module):
     def __init__(self, num_inputs, num_actions, hidden_size, init_w=3e-3):
-        super(ValueNetwork, self).__init__()
+        super(Critic, self).__init__()
 
         self.linear1 = nn.Linear(num_inputs + num_actions, hidden_size)
         self.linear2 = nn.Linear(hidden_size, hidden_size)
@@ -86,9 +86,9 @@ class ValueNetwork(nn.Module):
         return x
 
 
-class PolicyNetwork(nn.Module):
+class Actor(nn.Module):
     def __init__(self, num_inputs, num_actions, hidden_size, init_w=3e-3):
-        super(PolicyNetwork, self).__init__()
+        super(Actor, self).__init__()
 
         self.linear1 = nn.Linear(num_inputs, hidden_size)
         self.linear2 = nn.Linear(hidden_size, hidden_size)
@@ -204,9 +204,9 @@ class ReplayBufferRisk:
         return len(self.buffer)
 
 
-class DDPG(object):
+class CTD3(object):
     def __init__(self, config, action_dim, state_dim, hidden_dim):
-        super(DDPG, self).__init__()
+        super(CTD3, self).__init__()
         self.action_dim, self.state_dim, self.hidden_dim = action_dim, state_dim, hidden_dim
         self.batch_size = 50
         self.gamma = 0.99
@@ -214,27 +214,34 @@ class DDPG(object):
         self.max_value = np.inf
         self.soft_tau = 2e-2
         self.replay_buffer_size = 10000
-        self.value_lr = 0.001
-        self.policy_lr = 0.0001
-        self.use_risk = config['risk']
+        self.actor_lr = 0.0001
+        self.critic_lr = 0.001
+        self.use_risk = config.get('use_risk', False)
         self.risk_lr = 0.001
+        self.policy_delay = config.get("policy_delay", 2)
 
-        self.value_net = ValueNetwork(state_dim, action_dim, hidden_dim).to(device)
-        self.policy_net = PolicyNetwork(state_dim, action_dim, hidden_dim).to(device)
+        self.actor = Actor(state_dim, action_dim, hidden_dim).to(device)
+        self.critic1 = Critic(state_dim, action_dim, hidden_dim).to(device)
+        self.critic2 = Critic(state_dim, action_dim, hidden_dim).to(device)
 
-        self.target_value_net = ValueNetwork(state_dim, action_dim, hidden_dim).to(device)
-        self.target_policy_net = PolicyNetwork(state_dim, action_dim, hidden_dim).to(device)
+        self.actor_target = Actor(state_dim, action_dim, hidden_dim).to(device)
+        self.critic1_target = Critic(state_dim, action_dim, hidden_dim).to(device)
+        self.critic2_target = Critic(state_dim, action_dim, hidden_dim).to(device)
 
-        for target_param, param in zip(self.target_value_net.parameters(), self.value_net.parameters()):
+        for target_param, param in zip(self.actor_target.parameters(), self.actor.parameters()):
             target_param.data.copy_(param.data)
 
-        for target_param, param in zip(self.target_policy_net.parameters(), self.policy_net.parameters()):
+        for target_param, param in zip(self.critic1_target.parameters(), self.critic1.parameters()):
             target_param.data.copy_(param.data)
 
-        self.value_optimizer = optim.Adam(self.value_net.parameters(), lr=self.value_lr)
-        self.policy_optimizer = optim.Adam(self.policy_net.parameters(), lr=self.policy_lr)
+        for target_param, param in zip(self.critic2_target.parameters(), self.critic2.parameters()):
+            target_param.data.copy_(param.data)
 
-        self.value_criterion = nn.MSELoss()
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=self.actor_lr)
+        self.critic1_optimizer = optim.Adam(self.critic1.parameters(), lr=self.critic_lr)
+        self.critic2_optimizer = optim.Adam(self.critic2.parameters(), lr=self.critic_lr)
+
+        self.actor_criterion = nn.MSELoss()
 
         if self.use_risk:
             self.risk = Risk(state_dim, action_dim, hidden_dim).to(device)
@@ -247,7 +254,11 @@ class DDPG(object):
         else:
             self.replay_buffer = ReplayBuffer(self.replay_buffer_size)
 
-    def ddpg_update(self):
+        self.num_critic_update_iteration = 0
+        self.num_actor_update_iteration = 0
+        self.num_training = 0
+
+    def update(self):
         if self.use_risk:
             state, action, reward, next_state, done, cost = self.replay_buffer.sample(self.batch_size)
         else:
@@ -261,24 +272,23 @@ class DDPG(object):
         if self.use_risk:
             cost = torch.FloatTensor(np.array(cost)).unsqueeze(1).to(device)
 
-        policy_loss = self.value_net(state, self.policy_net(state))
-        policy_loss = -policy_loss.mean()
+        next_action = self.actor_target(next_state)
+        target_Q1 = self.critic1_target(next_state, next_action)
+        target_Q2 = self.critic2_target(next_state, next_action)
+        target_Q = torch.min(target_Q1, target_Q2)
+        target_Q = reward + ((1 - done) * self.gamma * target_Q).detach()
 
-        next_action = self.target_policy_net(next_state)
-        target_value = self.target_value_net(next_state, next_action.detach())
-        expected_value = reward + (1.0 - done) * self.gamma * target_value
-        expected_value = torch.clamp(expected_value, self.min_value, self.max_value)
+        current_Q1 = self.critic1(state, action)
+        loss_Q1 = F.mse_loss(current_Q1, target_Q)
+        self.critic1_optimizer.zero_grad()
+        loss_Q1.backward()
+        self.critic1_optimizer.step()
 
-        value = self.value_net(state, action)
-        value_loss = self.value_criterion(value, expected_value.detach())
-
-        self.policy_optimizer.zero_grad()
-        policy_loss.backward()
-        self.policy_optimizer.step()
-
-        self.value_optimizer.zero_grad()
-        value_loss.backward()
-        self.value_optimizer.step()
+        current_Q2 = self.critic2(state, action)
+        loss_Q2 = F.mse_loss(current_Q2, target_Q)
+        self.critic2_optimizer.zero_grad()
+        loss_Q2.backward()
+        self.critic2_optimizer.step()
 
         if self.use_risk:
             target_risk = self.risk_target(next_state, next_action)
@@ -289,15 +299,30 @@ class DDPG(object):
             loss_risk.backward()
             self.risk_optimizer.step()
 
-        for target_param, param in zip(self.target_value_net.parameters(), self.value_net.parameters()):
-            target_param.data.copy_(
-                target_param.data * (1.0 - self.soft_tau) + param.data * self.soft_tau
-            )
+        if self.num_critic_update_iteration % self.policy_delay == 0:
 
-        for target_param, param in zip(self.target_policy_net.parameters(), self.policy_net.parameters()):
-            target_param.data.copy_(
-                target_param.data * (1.0 - self.soft_tau) + param.data * self.soft_tau
-            )
+            actor_loss = - self.critic1(state, self.actor(state)).mean()
+
+            self.actor_optimizer.zero_grad()
+            actor_loss.backward()
+            self.actor_optimizer.step()
+
+            for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
+                target_param.data.copy_(
+                    ((1 - self.soft_tau) * target_param.data) + self.soft_tau * param.data
+                )
+            for param, target_param in zip(self.critic1.parameters(), self.critic1_target.parameters()):
+                target_param.data.copy_(
+                    ((1 - self.soft_tau) * target_param.data) + self.soft_tau * param.data
+                )
+            for param, target_param in zip(self.critic2.parameters(), self.critic2_target.parameters()):
+                target_param.data.copy_(
+                    ((1 - self.soft_tau) * target_param.data) + self.soft_tau * param.data
+                )
+
+            self.num_actor_update_iteration += 1
+
+        self.num_training += 1
 
 
 class Trajectory:
@@ -320,12 +345,12 @@ def get_info_from_obs(obs, pixor=False):
 
 
 def main():
-    TASK_MODE = 'Lane'
+    TASK_MODE = 'Straight'
     params = {
         'dt': 0.1,  # time interval between two frames
         'port': 2000,  # connection port
         'task_mode': TASK_MODE,  # mode of the task, [random, roundabout (only for Town03)]
-        'max_time_episode': 1000,  # 1000,  # maximum timesteps per episode
+        'max_time_episode': 5000,  # 1000,  # maximum timesteps per episode
         'obs_size': [160, 100],  # screen size of bird-eye render
         'desired_speed': 8,  # desired speed (m/s)
         'max_ego_spawn_times': 200,  # maximum times to spawn ego vehicle
@@ -339,7 +364,7 @@ def main():
 
         'number_of_vehicles': 10,
         'number_of_walkers': 3,
-        'out_lane_thres': 0,  # 2.0,  # threshold for out of lane
+        'out_lane_thres': 0.5,  # 2.0,  # threshold for out of lane
 
         'code_mode': 'train',
         'discrete': False,  # whether to use discrete control space
@@ -352,16 +377,17 @@ def main():
         #         'town': 'Town03',  # which town to simulate
         #         'pixor_size': 64,  # size of the pixor labels
 
-        'icm': True,
+        'icm': False,
         'icm_type': [ICMType.LINEAR, ICMType.LSTM, ICMType.DNN][2],
         'icm_scale': 500,  # 0.001,
-        'icm_only': True,
+        'icm_only': False,
 
         'store_coordinate': True,
-        'risk': False,
+        'use_risk': False,
 
         # 'display_size': 500,
         'pixor': False,
+        'policy_delay': 2,
     }
     env = gym.make('CarlaEnv-v0', params=params)
     env.reset()
@@ -378,14 +404,14 @@ def main():
     # print(env.action_space)
     hidden_dim = 768
 
-    ddpg = DDPG(params, action_dim, state_dim, hidden_dim)
+    ddpg = CTD3(params, action_dim, state_dim, hidden_dim)
 
     if params['icm']:
         # ICM
         # icm_module = ICM(params['icm_type'], state_dim, action_dim).to(device)
         icm_module = ICM(params['icm_type'], 512, action_dim).to(device)
 
-    max_steps = 2000
+    max_steps = 200
     trajectorys = []
     rewards = []
     batch_size = 54
@@ -401,7 +427,7 @@ def main():
         camera_feature = encode_image(camera)
         state = torch.flatten(torch.tensor(state))
         # 开始状态
-        if params['risk']:
+        if params['use_risk']:
             trajectorys.append(Trajectory(np.zeros(21), [0.0, 0.0], [0.0, 0.0], 0).to_list())
         else:
             trajectorys.append(Trajectory(np.zeros(19), [0.0, 0.0], [0.0, 0.0]).to_list())
@@ -412,7 +438,7 @@ def main():
         st = 0
 
         while not done:
-            action = ddpg.policy_net.get_action(state)
+            action = ddpg.actor.get_action(state)
             # print(action)
             action[0] = np.clip(np.random.normal(action[0], VAR), -1, 1)  # 在动作选择上添加随机噪声
             action[1] = np.clip(np.random.normal(action[1], VAR), -0.2, 0.2)  # 在动作选择上添加随机噪声
@@ -427,7 +453,7 @@ def main():
                 reward = -10
                 done = True
 
-            if params['risk']:
+            if params['use_risk']:
                 """Define the cost"""
                 cost = get_cost(info, next_state, action, done)
 
@@ -448,18 +474,18 @@ def main():
                 forward_loss.backward(retain_graph=True)
                 inverse_loss.backward(retain_graph=True)
 
-            if params['icm_only']:
+            if params['icm'] and params['icm_only']:
                 reward = 0  # 关闭外部奖励
-            if params['risk']:
+            if params['use_risk']:
                 ddpg.replay_buffer.push(state, action, reward + intrinsic_reward, next_state, done, cost)
             else:
                 ddpg.replay_buffer.push(state, action, reward + intrinsic_reward, next_state, done)
 
             if len(ddpg.replay_buffer) > batch_size:
                 VAR *= .9995  # decay the action randomness
-                ddpg.ddpg_update()
+                ddpg.update()
 
-            if params['risk']:
+            if params['use_risk']:
                 trajectorys.append(Trajectory(state.numpy(), info['coordinate'], action, cost).to_list())
             else:
                 trajectorys.append(Trajectory(state.numpy(), info['coordinate'], action).to_list())
@@ -471,7 +497,7 @@ def main():
             st = st + 1
 
         rewards.append([episode_reward, episode_intrinsic_reward])
-        if params['risk']:
+        if params['use_risk']:
             trajectorys.append(Trajectory(np.zeros(21), [1, 1], [1, 1], 1).to_list())
         else:
             trajectorys.append(Trajectory(np.zeros(19), [1, 1], [1, 1]).to_list())
@@ -489,14 +515,16 @@ def main():
                 'speed', 'angle', 'offset', 'e_speed', 'distance',
                 'e_distance', 'safe_distance', 'light_state', 'sl_distance',
                 'x', 'y', 'action_acc', 'action_steer']
-    if params['risk']:
+    if params['use_risk']:
         columns.append('cost')
     df2 = pd.DataFrame(data=trajectorys, columns=columns)
     df2.to_csv('trajectory.csv', index=False)
-    torch.save(ddpg.value_net.state_dict(), 'value_net.pt')
-    torch.save(ddpg.policy_net.state_dict(), 'policy_net.pt')
-    torch.save(ddpg.target_value_net.state_dict(), 'target_value_net.pt')
-    torch.save(ddpg.target_policy_net.state_dict(), 'target_policy_net.pt')
+    torch.save(ddpg.actor.state_dict(), 'output_logger/actor.pth')
+    torch.save(ddpg.actor_target.state_dict(), 'output_logger/actor_target.pth')
+    torch.save(ddpg.critic1.state_dict(), 'output_logger/critic1.pth')
+    torch.save(ddpg.critic1_target.state_dict(), 'output_logger/critic1_target.pth')
+    torch.save(ddpg.critic2.state_dict(), 'output_logger/critic2.pth')
+    torch.save(ddpg.critic2_target.state_dict(), 'output_logger/critic2_target.pth')
 
 
 if __name__ == '__main__':
