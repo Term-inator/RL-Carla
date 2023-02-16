@@ -120,11 +120,11 @@ class Risk(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_dim):
         super(Risk, self).__init__()
         self.fc = nn.Sequential(
-                nn.Linear(state_dim+action_dim, hidden_dim),
-                nn.ReLU(),
-                nn.Linear(hidden_dim, hidden_dim),
-                nn.ReLU(),
-                nn.Linear(hidden_dim, action_dim),
+            nn.Linear(state_dim + action_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, action_dim),
         )
 
     def forward(self, state, action):
@@ -241,6 +241,15 @@ class CTD3(object):
         self.critic1_optimizer = optim.Adam(self.critic1.parameters(), lr=self.critic_lr)
         self.critic2_optimizer = optim.Adam(self.critic2.parameters(), lr=self.critic_lr)
 
+        if config['code_mode'] == 'test':
+            self.load('output_logger', config['test_index'])
+            self.actor.eval()
+            self.critic1.eval()
+            self.critic2.eval()
+            self.actor_target.eval()
+            self.critic1_target.eval()
+            self.critic2_target.eval()
+
         self.actor_criterion = nn.MSELoss()
 
         if self.use_risk:
@@ -259,6 +268,7 @@ class CTD3(object):
         self.num_training = 0
 
     def update(self):
+        # print("update")
         if self.use_risk:
             state, action, reward, next_state, done, cost = self.replay_buffer.sample(self.batch_size)
         else:
@@ -324,6 +334,24 @@ class CTD3(object):
 
         self.num_training += 1
 
+    def save(self, path, index=''):
+        torch.save(self.actor.state_dict(), os.path.join(path, f'actor_{index}.pth'))
+        torch.save(self.actor_target.state_dict(), os.path.join(path, f'actor_target_{index}.pth'))
+        torch.save(self.critic1.state_dict(), os.path.join(path, f'critic1_{index}.pth'))
+        torch.save(self.critic1_target.state_dict(), os.path.join(path, f'critic1_target_{index}.pth'))
+        torch.save(self.critic2.state_dict(), os.path.join(path, f'critic2_{index}.pth'))
+        torch.save(self.critic2_target.state_dict(), os.path.join(path, f'critic2_target_{index}.pth'))
+        print("model has been saved...")
+
+    def load(self, path, index=''):
+        self.actor.load_state_dict(torch.load(os.path.join(path, f'actor_{index}.pth')))
+        self.actor_target.load_state_dict(torch.load(os.path.join(path, f'actor_target_{index}.pth')))
+        self.critic1.load_state_dict(torch.load(os.path.join(path, f'critic1_{index}.pth')))
+        self.critic1_target.load_state_dict(torch.load(os.path.join(path, f'critic1_target_{index}.pth')))
+        self.critic2.load_state_dict(torch.load(os.path.join(path, f'critic2_{index}.pth')))
+        self.critic2_target.load_state_dict(torch.load(os.path.join(path, f'critic2_target_{index}.pth')))
+        print("model has been loaded...")
+
 
 class Trajectory:
     def __init__(self, state, coordinate, action, cost=None):
@@ -345,7 +373,7 @@ def get_info_from_obs(obs, pixor=False):
 
 
 def main():
-    TASK_MODE = 'Straight'
+    TASK_MODE = 'Lane'
     params = {
         'dt': 0.1,  # time interval between two frames
         'port': 2000,  # connection port
@@ -364,9 +392,10 @@ def main():
 
         'number_of_vehicles': 10,
         'number_of_walkers': 3,
-        'out_lane_thres': 0.5,  # 2.0,  # threshold for out of lane
+        'out_lane_thres': 0,  # 2.0,  # threshold for out of lane
 
-        'code_mode': 'train',
+        'code_mode': 'test',
+        'test_index': '8000',
         'discrete': False,  # whether to use discrete control space
         'discrete_acc': [-3.0, 0.0, 3.0],  # discrete value of accelerations
         'discrete_steer': [-0.2, 0.0, 0.2],  # discrete value of steering angles
@@ -411,7 +440,7 @@ def main():
         # icm_module = ICM(params['icm_type'], state_dim, action_dim).to(device)
         icm_module = ICM(params['icm_type'], 512, action_dim).to(device)
 
-    max_steps = 200
+    max_steps = 500
     trajectorys = []
     rewards = []
     batch_size = 54
@@ -430,7 +459,7 @@ def main():
         if params['use_risk']:
             trajectorys.append(Trajectory(np.zeros(21), [0.0, 0.0], [0.0, 0.0], 0).to_list())
         else:
-            trajectorys.append(Trajectory(np.zeros(19), [0.0, 0.0], [0.0, 0.0]).to_list())
+            trajectorys.append(Trajectory(np.zeros(21), [0.0, 0.0], [0.0, 0.0]).to_list())
         ou_noise.reset()
         episode_intrinsic_reward = 0
         episode_reward = 0
@@ -481,9 +510,10 @@ def main():
             else:
                 ddpg.replay_buffer.push(state, action, reward + intrinsic_reward, next_state, done)
 
-            if len(ddpg.replay_buffer) > batch_size:
-                VAR *= .9995  # decay the action randomness
-                ddpg.update()
+            if params['code_mode'] == 'train':
+                if len(ddpg.replay_buffer) > batch_size:
+                    VAR *= .9995  # decay the action randomness
+                    ddpg.update()
 
             if params['use_risk']:
                 trajectorys.append(Trajectory(state.numpy(), info['coordinate'], action, cost).to_list())
@@ -500,8 +530,12 @@ def main():
         if params['use_risk']:
             trajectorys.append(Trajectory(np.zeros(21), [1, 1], [1, 1], 1).to_list())
         else:
-            trajectorys.append(Trajectory(np.zeros(19), [1, 1], [1, 1]).to_list())
+            trajectorys.append(Trajectory(np.zeros(21), [1, 1], [1, 1]).to_list())
         print("回合奖励为：{}, {}".format(episode_reward, episode_intrinsic_reward))
+
+        if step % 1000 == 0 and step != 0:
+            if params['code_mode'] == 'train':
+                ddpg.save('output_logger', index=str(step))
 
     env.close()
     # print(states)
@@ -509,22 +543,16 @@ def main():
                        columns=['reward', 'icm_reward'])
     df1.to_csv(filePath, index=False)
     columns = ['velocity_t_x', 'velocity_t_y', 'accel_t_x', 'accel_t_y',
-                'delta_yaw_t', 'dyaw_dt_t', 'lateral_dist_t',
-                'action_last_accel', 'accel_last_steer',
-                'future_angles_0', 'future_angles_1', 'future_angles_3',
-                'speed', 'angle', 'offset', 'e_speed', 'distance',
-                'e_distance', 'safe_distance', 'light_state', 'sl_distance',
-                'x', 'y', 'action_acc', 'action_steer']
+               'delta_yaw_t', 'dyaw_dt_t', 'lateral_dist_t',
+               'action_last_accel', 'accel_last_steer',
+               'future_angles_0', 'future_angles_1', 'future_angles_3',
+               'speed', 'angle', 'offset', 'e_speed', 'distance',
+               'e_distance', 'safe_distance', 'light_state', 'sl_distance',
+               'x', 'y', 'action_acc', 'action_steer']
     if params['use_risk']:
         columns.append('cost')
     df2 = pd.DataFrame(data=trajectorys, columns=columns)
     df2.to_csv('trajectory.csv', index=False)
-    torch.save(ddpg.actor.state_dict(), 'output_logger/actor.pth')
-    torch.save(ddpg.actor_target.state_dict(), 'output_logger/actor_target.pth')
-    torch.save(ddpg.critic1.state_dict(), 'output_logger/critic1.pth')
-    torch.save(ddpg.critic1_target.state_dict(), 'output_logger/critic1_target.pth')
-    torch.save(ddpg.critic2.state_dict(), 'output_logger/critic2.pth')
-    torch.save(ddpg.critic2_target.state_dict(), 'output_logger/critic2_target.pth')
 
 
 if __name__ == '__main__':

@@ -332,11 +332,12 @@ class CarlaEnv(gym.Env):
             self.route_id = 0
         elif self.task_mode == 'Long' or self.task_mode == 'Lane' or self.task_mode == 'Lane_test':
             if self.code_mode == 'train':
-                self.route_id = np.random.randint(0, 4)
-                # self.route_id = 0
+                # self.route_id = np.random.randint(0, 4)
+                self.route_id = 0
             elif self.code_mode == 'test':
-                self.route_id = self.route_deterministic_id
-                self.route_deterministic_id = (self.route_deterministic_id + 1) % 4
+                self.route_id = 0
+                # self.route_id = self.route_deterministic_id
+                # self.route_deterministic_id = (self.route_deterministic_id + 1) % 4
         elif self.task_mode == 'TrafficLight':
             self.route_id = 0
         self.start = self.starts[self.route_id]
@@ -350,7 +351,9 @@ class CarlaEnv(gym.Env):
             transform = self._set_carla_transform(self.start)  # 从起点生成ego车辆
             if self.code_mode == 'train':
                 # 如果处于训练模式下，则在指定路段的随机位置生成ego车辆
-                transform = self._get_random_position_between(start=self.start, dest=self.dest, transform=transform)
+                 transform = self._get_random_position_between(start=self.start, dest=self.dest, transform=transform)
+            else:
+                transform = self.get_position(self.start, 60)  # Lane 修正
             if self._try_spawn_ego_vehicle_at(transform): # and self._try_spawn_random_vehicle_at(self.get_position(self.start, 30)):
                 break
             else:
@@ -915,8 +918,8 @@ class CarlaEnv(gym.Env):
         # delta_speed = -abs(speed - self.desired_speed)
         # r_speed = -delta_speed ** 2 / 5.0
         r_speed = 0
-        if speed < 1:
-            r_speed = -500
+        # if speed < 1:
+        #     r_speed = -500
         #
         # # reward for steering:
         # delta_yaw, _, _ = self._get_delta_yaw()
