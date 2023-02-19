@@ -5,8 +5,11 @@ import sys
 from collections import namedtuple
 
 from PIL import Image
+from tensorboardX import SummaryWriter
 
 from ICM import ICM, ICMType
+import RND
+from RND import RNDModel
 from carla_env.carla_env import State
 
 try:
@@ -44,7 +47,7 @@ torch.cuda.empty_cache()
 use_cuda = torch.cuda.is_available()
 print(use_cuda)
 device = torch.device("cuda:0" if use_cuda else "cpu")
-filePath = 'all.csv'
+file_path = 'trajectory'
 
 Tensor = FloatTensor
 
@@ -54,6 +57,17 @@ TARGET_NETWORK_REPLACE_FREQ = 100  # How frequently target netowrk updates
 MEMORY_CAPACITY = 200
 BATCH_SIZE = 32
 LR = 0.01  # learning rate
+
+
+def seed_torch(seed=42):
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)  # 为了禁止hash随机化，使得实验可复现
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
 
 
 def get_cost(info, state, action, done, last_action=None, last_state=None):
@@ -205,7 +219,7 @@ class ReplayBufferRisk:
 
 
 class CTD3(object):
-    def __init__(self, config, action_dim, state_dim, hidden_dim):
+    def __init__(self, config, action_dim, state_dim, hidden_dim, writer=None):
         super(CTD3, self).__init__()
         self.action_dim, self.state_dim, self.hidden_dim = action_dim, state_dim, hidden_dim
         self.batch_size = 50
@@ -267,6 +281,8 @@ class CTD3(object):
         self.num_actor_update_iteration = 0
         self.num_training = 0
 
+        self.writer = writer
+
     def update(self):
         # print("update")
         if self.use_risk:
@@ -293,12 +309,14 @@ class CTD3(object):
         self.critic1_optimizer.zero_grad()
         loss_Q1.backward()
         self.critic1_optimizer.step()
+        self.writer.add_scalar('Loss/Q1_loss', loss_Q1, global_step=self.num_critic_update_iteration)
 
         current_Q2 = self.critic2(state, action)
         loss_Q2 = F.mse_loss(current_Q2, target_Q)
         self.critic2_optimizer.zero_grad()
         loss_Q2.backward()
         self.critic2_optimizer.step()
+        self.writer.add_scalar('Loss/Q2_loss', loss_Q2, global_step=self.num_critic_update_iteration)
 
         if self.use_risk:
             target_risk = self.risk_target(next_state, next_action)
@@ -308,6 +326,7 @@ class CTD3(object):
             self.risk_optimizer.zero_grad()
             loss_risk.backward()
             self.risk_optimizer.step()
+            self.writer.add_scalar('Loss/Risk_loss', loss_risk, global_step=self.num_critic_update_iteration)
 
         if self.num_critic_update_iteration % self.policy_delay == 0:
 
@@ -316,6 +335,7 @@ class CTD3(object):
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
             self.actor_optimizer.step()
+            self.writer.add_scalar('Loss/Actor_loss', actor_loss, global_step=self.num_actor_update_iteration)
 
             for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
                 target_param.data.copy_(
@@ -332,6 +352,7 @@ class CTD3(object):
 
             self.num_actor_update_iteration += 1
 
+        self.num_critic_update_iteration += 1
         self.num_training += 1
 
     def save(self, path, index=''):
@@ -372,6 +393,16 @@ def get_info_from_obs(obs, pixor=False):
         return obs['camera'], obs['state']
 
 
+def save_trajectory(file_path, trajectories, rewards, trajectory_columns, reward_columns, index=''):
+    df1 = pd.DataFrame(data=rewards,
+                       columns=reward_columns)
+
+    df2 = pd.DataFrame(data=trajectories, columns=trajectory_columns)
+    df = pd.concat([df2, df1], axis=1)
+    df.to_csv(f'{file_path}_{index}.csv', index=False)
+    print("trajectory has been saved...")
+
+
 def main():
     TASK_MODE = 'Lane'
     params = {
@@ -394,7 +425,7 @@ def main():
         'number_of_walkers': 3,
         'out_lane_thres': 0,  # 2.0,  # threshold for out of lane
 
-        'code_mode': 'test',
+        'code_mode': 'train',
         'test_index': '8000',
         'discrete': False,  # whether to use discrete control space
         'discrete_acc': [-3.0, 0.0, 3.0],  # discrete value of accelerations
@@ -406,10 +437,14 @@ def main():
         #         'town': 'Town03',  # which town to simulate
         #         'pixor_size': 64,  # size of the pixor labels
 
-        'icm': False,
+        'icm': True,
         'icm_type': [ICMType.LINEAR, ICMType.LSTM, ICMType.DNN][2],
         'icm_scale': 500,  # 0.001,
         'icm_only': False,
+
+        'rnd': False,
+        'rnd_scale': 1.0,
+        'rnd_only': False,
 
         'store_coordinate': True,
         'use_risk': False,
@@ -418,6 +453,19 @@ def main():
         'pixor': False,
         'policy_delay': 2,
     }
+    seed_torch()
+    writer = SummaryWriter('./tensorboard/' + TASK_MODE + '/')
+    df1_columns = ['reward', 'intrinsic_reward']
+    df2_columns = ['velocity_t_x', 'velocity_t_y', 'accel_t_x', 'accel_t_y',
+                   'delta_yaw_t', 'dyaw_dt_t', 'lateral_dist_t',
+                   'action_last_accel', 'accel_last_steer',
+                   'future_angles_0', 'future_angles_1', 'future_angles_3',
+                   'speed', 'angle', 'offset', 'e_speed', 'distance',
+                   'e_distance', 'safe_distance', 'light_state', 'sl_distance',
+                   'x', 'y', 'action_acc', 'action_steer']
+    if params['use_risk']:
+        df2_columns.append('cost')
+
     env = gym.make('CarlaEnv-v0', params=params)
     env.reset()
     #     env = NormalizedActions(env)
@@ -433,14 +481,17 @@ def main():
     # print(env.action_space)
     hidden_dim = 768
 
-    ddpg = CTD3(params, action_dim, state_dim, hidden_dim)
+    ddpg = CTD3(params, action_dim, state_dim, hidden_dim, writer=writer)
 
     if params['icm']:
         # ICM
         # icm_module = ICM(params['icm_type'], state_dim, action_dim).to(device)
         icm_module = ICM(params['icm_type'], 512, action_dim).to(device)
+    elif params['rnd']:
+        # RND
+        rnd_module = RNDModel(512, 512).to(device)
 
-    max_steps = 500
+    max_steps = 20000
     trajectorys = []
     rewards = []
     batch_size = 54
@@ -455,11 +506,14 @@ def main():
         # camera.show()
         camera_feature = encode_image(camera)
         state = torch.flatten(torch.tensor(state))
+
         # 开始状态
         if params['use_risk']:
             trajectorys.append(Trajectory(np.zeros(21), [0.0, 0.0], [0.0, 0.0], 0).to_list())
         else:
             trajectorys.append(Trajectory(np.zeros(21), [0.0, 0.0], [0.0, 0.0]).to_list())
+        rewards.append([0, 0])
+
         ou_noise.reset()
         episode_intrinsic_reward = 0
         episode_reward = 0
@@ -499,11 +553,19 @@ def main():
                 forward_loss = F.mse_loss(pred_next_state, next_camera_feature).to(device)
                 inverse_loss = F.cross_entropy(pred_action, action_tensor).to(device)
                 intrinsic_reward = params['icm_scale'] * forward_loss.item()
-                episode_intrinsic_reward += intrinsic_reward
                 forward_loss.backward(retain_graph=True)
                 inverse_loss.backward(retain_graph=True)
+            elif params['rnd']:
+                # RND
+                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
+                next_state_tensor = torch.FloatTensor(next_state).unsqueeze(0).to(device)
+                target_next_feature = rnd_module.target(next_camera_feature)
+                predict_next_feature = rnd_module.predictor(next_camera_feature)
+                forward_loss = (target_next_feature - predict_next_feature).pow(2).sum(1) / 2
+                intrinsic_reward = params['rnd_scale'] * forward_loss.item()
+                forward_loss.backward(retain_graph=True)
 
-            if params['icm'] and params['icm_only']:
+            if (params['icm'] and params['icm_only']) or (params['rnd'] and params['rnd_only']):
                 reward = 0  # 关闭外部奖励
             if params['use_risk']:
                 ddpg.replay_buffer.push(state, action, reward + intrinsic_reward, next_state, done, cost)
@@ -522,37 +584,39 @@ def main():
 
             state = next_state
             camera = next_camera
+            episode_intrinsic_reward += intrinsic_reward
             episode_reward += reward
-            env.render()
-            st = st + 1
+            st += 1
+            writer.add_scalar('Reward/extrinsic_reward', reward / st, global_step=step)
+            writer.add_scalar('Reward/intrinsic_reward', intrinsic_reward / st, global_step=step)
+            writer.add_scalar('Reward/epoch_reward', episode_reward / st, global_step=step)
+            rewards.append([reward, intrinsic_reward])
 
-        rewards.append([episode_reward, episode_intrinsic_reward])
+            env.render()
+
         if params['use_risk']:
             trajectorys.append(Trajectory(np.zeros(21), [1, 1], [1, 1], 1).to_list())
         else:
             trajectorys.append(Trajectory(np.zeros(21), [1, 1], [1, 1]).to_list())
+        rewards.append([1, 1])
         print("回合奖励为：{}, {}".format(episode_reward, episode_intrinsic_reward))
 
+        # 保存轨迹
+        if step % 500 == 0 and step != 0:
+            save_trajectory(file_path, trajectorys, rewards, trajectory_columns=df2_columns, reward_columns=df1_columns,
+                            index=str(step))
+
+        # 保存模型
         if step % 1000 == 0 and step != 0:
             if params['code_mode'] == 'train':
                 ddpg.save('output_logger', index=str(step))
 
     env.close()
-    # print(states)
-    df1 = pd.DataFrame(data=rewards,
-                       columns=['reward', 'icm_reward'])
-    df1.to_csv(filePath, index=False)
-    columns = ['velocity_t_x', 'velocity_t_y', 'accel_t_x', 'accel_t_y',
-               'delta_yaw_t', 'dyaw_dt_t', 'lateral_dist_t',
-               'action_last_accel', 'accel_last_steer',
-               'future_angles_0', 'future_angles_1', 'future_angles_3',
-               'speed', 'angle', 'offset', 'e_speed', 'distance',
-               'e_distance', 'safe_distance', 'light_state', 'sl_distance',
-               'x', 'y', 'action_acc', 'action_steer']
-    if params['use_risk']:
-        columns.append('cost')
-    df2 = pd.DataFrame(data=trajectorys, columns=columns)
-    df2.to_csv('trajectory.csv', index=False)
+
+    save_trajectory(file_path, trajectorys, rewards, trajectory_columns=df2_columns, reward_columns=df1_columns,
+                    index='final')
+    if params['code_mode'] == 'train':
+        ddpg.save('output_logger', index='final')
 
 
 if __name__ == '__main__':

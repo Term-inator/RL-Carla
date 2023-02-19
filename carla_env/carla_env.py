@@ -918,8 +918,8 @@ class CarlaEnv(gym.Env):
         # delta_speed = -abs(speed - self.desired_speed)
         # r_speed = -delta_speed ** 2 / 5.0
         r_speed = 0
-        # if speed < 1:
-        #     r_speed = -500
+        if speed < 1:
+            r_speed = -20.0
         #
         # # reward for steering:
         # delta_yaw, _, _ = self._get_delta_yaw()
@@ -1065,8 +1065,11 @@ class CarlaEnv(gym.Env):
             ratio = float(np.random.rand() * 30)
         elif self.task_mode == 'Curve':
             ratio = float(np.random.rand() * 45)
-        elif self.task_mode == 'Long' or self.task_mode == 'Lane':
+        elif self.task_mode == 'Long':
             ratio = float(np.random.rand() * 60)
+        elif self.task_mode == 'Lane':
+            ratio = float((1/3 + np.random.rand()/3) * 60)
+            # ratio = float(np.random.rand() * 60)
         else:
             ratio = 0
         transform = self.get_position(start, ratio)
