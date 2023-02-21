@@ -20,7 +20,6 @@ from carla_env.route_planner import RoutePlanner
 from carla_env.coordinates import train_coordinates
 from .carla_logger import *
 
-
 # 导入Carla
 import glob
 import os
@@ -204,7 +203,7 @@ class CarlaEnv(gym.Env):
         print('connected carla client')
         # 根据任务设置起点和终点
         self.starts, self.dests = train_coordinates(self.task_mode)
-        #         print("起点是：",self.starts,"\n终点是:" self.dests)
+        print("起点是：", self.starts, "\n终点是:", self.dests)
         self.route_deterministic_id = 0
 
         '''
@@ -349,12 +348,15 @@ class CarlaEnv(gym.Env):
             if ego_spawn_times > self.max_ego_spawn_times:
                 self.reset()
             transform = self._set_carla_transform(self.start)  # 从起点生成ego车辆
+            # curr_waypoint = self.map.get_waypoint(transform.location)
+            # print(curr_waypoint.next(150)[0].transform)
             if self.code_mode == 'train':
                 # 如果处于训练模式下，则在指定路段的随机位置生成ego车辆
-                 transform = self._get_random_position_between(start=self.start, dest=self.dest, transform=transform)
+                transform = self._get_random_position_between(start=self.start, dest=self.dest, transform=transform)
             else:
                 transform = self.get_position(self.start, 60)  # Lane 修正
-            if self._try_spawn_ego_vehicle_at(transform): # and self._try_spawn_random_vehicle_at(self.get_position(self.start, 30)):
+            if self._try_spawn_ego_vehicle_at(
+                    transform):  # and self._try_spawn_random_vehicle_at(self.get_position(self.start, 30)):
                 break
             else:
                 ego_spawn_times += 1
@@ -917,9 +919,8 @@ class CarlaEnv(gym.Env):
         speed = np.sqrt(v.x ** 2 + v.y ** 2)
         # delta_speed = -abs(speed - self.desired_speed)
         # r_speed = -delta_speed ** 2 / 5.0
-        r_speed = 0
         if speed < 1:
-            r_speed = -20.0
+            r_step -= 15.0
         #
         # # reward for steering:
         # delta_yaw, _, _ = self._get_delta_yaw()
@@ -963,9 +964,8 @@ class CarlaEnv(gym.Env):
         #     return r4 + r5 - r_step + r_reach
         # else:
         #     return r1 + r2 + r3 - r_step + r_reach
-        # return r1 + r2 + r3 + r4 + r5 + r_step + r_reach
+        return r1 + r2 + r3 + r4 + r5 + r_step + r_reach
         # return r_speed + r_steer + r_lateral + r_step + r_reach
-        return r1 + r2 + r3 + r4 + r5 + r_step + r_reach + r_speed
 
     def _get_future_wpt_angle(self, distances):
         angles = []
@@ -1068,7 +1068,7 @@ class CarlaEnv(gym.Env):
         elif self.task_mode == 'Long':
             ratio = float(np.random.rand() * 60)
         elif self.task_mode == 'Lane':
-            ratio = float((1/3 + np.random.rand()/3) * 60)
+            ratio = float((1 / 3 + np.random.rand() / 3) * 60)
             # ratio = float(np.random.rand() * 60)
         else:
             ratio = 0
@@ -1104,6 +1104,9 @@ class CarlaEnv(gym.Env):
                               (self.time_step, self.route_id))
             self.isTimeOut = True
             return True
+        #
+        # if self.get_state().speed < 0.1:
+        #     return True
 
         # If out of lane，超出车道
         if self.isOutOfLane:
@@ -1122,6 +1125,10 @@ class CarlaEnv(gym.Env):
         if self.dests is not None:  # If at destination
             for dest in self.dests:
                 if np.sqrt((ego_x - dest[0]) ** 2 + (ego_y - dest[1]) ** 2) < 4:
+                    print("Reach destination! Episode Done.")
+                    self.logger.debug(
+                        'Reach destination! Episode Done. Episode cost %d steps in route %d.' %
+                        (self.time_step, self.route_id))
                     self.reachDest = True
                     return True
         return False

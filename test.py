@@ -423,7 +423,7 @@ def main():
 
         'number_of_vehicles': 10,
         'number_of_walkers': 3,
-        'out_lane_thres': 0,  # 2.0,  # threshold for out of lane
+        'out_lane_thres': 0.0,  # 2.0,  # threshold for out of lane
 
         'code_mode': 'train',
         'test_index': '8000',
@@ -437,9 +437,9 @@ def main():
         #         'town': 'Town03',  # which town to simulate
         #         'pixor_size': 64,  # size of the pixor labels
 
-        'icm': True,
+        'icm': False,
         'icm_type': [ICMType.LINEAR, ICMType.LSTM, ICMType.DNN][2],
-        'icm_scale': 500,  # 0.001,
+        'icm_scale': 500,  # 500,
         'icm_only': False,
 
         'rnd': False,
@@ -491,12 +491,14 @@ def main():
         # RND
         rnd_module = RNDModel(512, 512).to(device)
 
-    max_steps = 20000
+    max_steps = 10010
     trajectorys = []
     rewards = []
     batch_size = 54
     VAR = 1  # control exploration
     reward_traf = []
+
+    iteration = 0
 
     for step in range(max_steps):
         print("================第{}回合======================================".format(step + 1))
@@ -587,9 +589,9 @@ def main():
             episode_intrinsic_reward += intrinsic_reward
             episode_reward += reward
             st += 1
-            writer.add_scalar('Reward/extrinsic_reward', reward / st, global_step=step)
-            writer.add_scalar('Reward/intrinsic_reward', intrinsic_reward / st, global_step=step)
-            writer.add_scalar('Reward/epoch_reward', episode_reward / st, global_step=step)
+            iteration += 1
+            writer.add_scalar('Reward/extrinsic_reward', reward, global_step=iteration)
+            writer.add_scalar('Reward/intrinsic_reward', intrinsic_reward, global_step=iteration)
             rewards.append([reward, intrinsic_reward])
 
             env.render()
@@ -599,6 +601,7 @@ def main():
         else:
             trajectorys.append(Trajectory(np.zeros(21), [1, 1], [1, 1]).to_list())
         rewards.append([1, 1])
+        writer.add_scalar('Reward/epoch_reward', (episode_reward + episode_intrinsic_reward) / st, global_step=step)
         print("回合奖励为：{}, {}".format(episode_reward, episode_intrinsic_reward))
 
         # 保存轨迹

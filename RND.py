@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 from torch import nn
 
@@ -37,11 +38,11 @@ class RNDModel(nn.Module):
             #     stride=1),
             # nn.LeakyReLU(),
             # Flatten(),
-            nn.Linear(feature_output, 512),
+            nn.Linear(feature_output, 768),
             nn.ReLU(),
-            nn.Linear(512, 512),
+            nn.Linear(768, 1152),
             nn.ReLU(),
-            nn.Linear(512, 512)
+            nn.Linear(1152, 512)
         )
 
         # 随机网络
@@ -68,14 +69,17 @@ class RNDModel(nn.Module):
             nn.Linear(feature_output, 512)
         )
 
-        # for index, param in enumerate(self.target.parameters()):
-        #     param.stop_gradient = True  # 随机网络不需要梯度更新参数
-        #     self.target.parameters()[index] = param.sign() * param.abs().sqrt(2)
+        for p in self.modules():
+            if isinstance(p, nn.Conv2d):
+                nn.init.orthogonal_(p.weight, np.sqrt(2))
+                p.bias.data.zero_()
 
-        for index, target_param in enumerate(self.target.parameters()):
-            target_param.data.copy_(
-                target_param.sign() * target_param.abs().sqrt()
-            )
+            if isinstance(p, nn.Linear):
+                nn.init.orthogonal_(p.weight, np.sqrt(2))
+                p.bias.data.zero_()
+
+        for param in self.target.parameters():
+            param.requires_grad = False
 
     def forward(self, next_obs):
         target_feature = self.target(next_obs)
