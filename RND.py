@@ -15,7 +15,7 @@ class RNDModel(nn.Module):
         self.input_size = input_size
         self.output_size = output_size
 
-        feature_output = 512 # 7 * 7 * 64
+        feature_output = input_size # 7 * 7 * 64
         # nn.initializer.set_global_initializer(nn.initializer.KaimingNormal(), nn.initializer.Constant(value=0.0))
         # 预测模型
         self.predictor = nn.Sequential(
@@ -38,11 +38,11 @@ class RNDModel(nn.Module):
             #     stride=1),
             # nn.LeakyReLU(),
             # Flatten(),
-            nn.Linear(feature_output, 768),
+            nn.Linear(feature_output, feature_output*3/2),
             nn.ReLU(),
-            nn.Linear(768, 1152),
+            nn.Linear(feature_output*3/2, feature_output*9/4),
             nn.ReLU(),
-            nn.Linear(1152, 512)
+            nn.Linear(feature_output*9/4, output_size)
         )
 
         # 随机网络
@@ -66,7 +66,7 @@ class RNDModel(nn.Module):
             #     stride=1),
             # nn.LeakyReLU(),
             # Flatten(),
-            nn.Linear(feature_output, 512)
+            nn.Linear(feature_output, output_size)
         )
 
         for p in self.modules():

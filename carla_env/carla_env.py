@@ -183,7 +183,8 @@ class CarlaEnv(gym.Env):
             # 'lidar': spaces.Box(low=0, high=255, shape=(self.obs_size, self.obs_size, 3), dtype=np.uint8),
             # 'birdeye': spaces.Box(low=0, high=255, shape=(self.obs_size, self.obs_size, 3), dtype=np.uint8),
             # 'state': spaces.Box(np.array([-2, -1, -5, 0]), np.array([2, 1, 30, 1]), dtype=np.float32),
-            'state': spaces.Box(low=-50.0, high=50.0, shape=(21,), dtype=np.float32)
+            # 'state': spaces.Box(low=-50.0, high=50.0, shape=(21,), dtype=np.float32)
+            'state': spaces.Box(low=-50.0, high=50.0, shape=(15,), dtype=np.float32)
         }
         # if self.pixor:
         #     observation_space_dict.update({
@@ -267,6 +268,8 @@ class CarlaEnv(gym.Env):
         self.state_info = {}  # 存储状态信息
         # self.actors = []  # 存储actor
         self.distances = [1., 5., 10.]
+
+        self.v_zero_time = 0
 
     def reset(self):
         # 1.清空传感器
@@ -437,6 +440,7 @@ class CarlaEnv(gym.Env):
         self.isSpecialSpeed = False
         self.reachDest = False
         self.enter_junction = False
+        self.hasStop = False
 
         self.obstacle_sensor = ObstacleDetector(self.ego)
 
@@ -507,8 +511,9 @@ class CarlaEnv(gym.Env):
         if self.store_coordinate:
             info['coordinate'] = self._get_ego_pos()
         self._out_of_lane()
-        reward = self._get_reward()
         terminal = self._terminal()
+        reward = self._get_reward()
+        info['reach_dest'] = self.reachDest
         #         print("obs:", obs, "\nreward:", reward, "\nterminal:", terminal)
         return obs, reward, terminal, copy.deepcopy(info)
 
@@ -690,6 +695,7 @@ class CarlaEnv(gym.Env):
         state.light_state = str(light_state) if traffic_light is not None else 'None'
         state.sl_distance = sl_distance
         state.offset = offset
+        # print("state: ", state)
         return state
 
     def _get_obs(self):
@@ -829,10 +835,15 @@ class CarlaEnv(gym.Env):
         sl_distance = np.array(next_state.sl_distance).reshape((1,))
         # print(velocity_t, "------", accel_t, "------", delta_yaw_t, "------", dyaw_dt_t, "------", lateral_dist_t, "------",
         #     action_last, "------", future_angles, "------", speed, "------", angle)
+        # info_vec = np.concatenate([
+        #     velocity_t, accel_t, delta_yaw_t, dyaw_dt_t, lateral_dist_t,
+        #     action_last, future_angles, speed, angle, offset, e_speed, distance,
+        #     e_distance, safe_distance, light_state, sl_distance
+        # ],
+        #     axis=0)
         info_vec = np.concatenate([
             velocity_t, accel_t, delta_yaw_t, dyaw_dt_t, lateral_dist_t,
-            action_last, future_angles, speed, angle, offset, e_speed, distance,
-            e_distance, safe_distance, light_state, sl_distance
+            action_last, future_angles, speed, angle, offset
         ],
             axis=0)
         info_vec = info_vec.squeeze()
@@ -890,7 +901,33 @@ class CarlaEnv(gym.Env):
         return obs
 
     def _get_reward(self):
+        '''
+        # reward new
+        v = self.ego.get_velocity()
+        speed = np.sqrt(v.x ** 2 + v.y ** 2)
+        # r_speed = -abs(speed - self.desired_speed)
+        # v_max = 15
+        r_speed = np.exp(-(speed - self.desired_speed) ** 2)
 
+        # 2. reward for collision   or self.hasStop
+        r_collision = 0
+        r_out_lane = 0
+        r_stop = 0
+        if self.isCollided:
+            r_collision = -1 * self.time_step
+        if self.isOutOfLane:
+            r_out_lane = -1 * self.time_step
+        if self.hasStop:
+            r_stop = -1 * self.time_step
+        # 3. reward for lane
+        r_lane = np.exp(-self.state_info['lateral_dist_t'])
+
+        r_reach = 0
+        if self.reachDest:
+            r_reach = 100.0
+
+        return r_lane + r_speed + r_collision + r_reach + r_out_lane + r_stop
+        '''
         state = self.get_state()
         r1 = - (k1 * math.sin(math.radians(state.angle)) + k2 * abs(state.offset))
         r2 = - (k3 * abs(state.distance - state.e_distance))
@@ -912,7 +949,8 @@ class CarlaEnv(gym.Env):
         #     return r_done
 
         if self.reachDest:
-            r_reach = 300.0
+            # r_reach = 300.0
+            r_reach = 500.0
         ###################
         # # reward for speed tracking
         v = self.ego.get_velocity()
@@ -920,7 +958,7 @@ class CarlaEnv(gym.Env):
         # delta_speed = -abs(speed - self.desired_speed)
         # r_speed = -delta_speed ** 2 / 5.0
         if speed < 1:
-            r_step -= 15.0
+            r_step -= 11.0
         #
         # # reward for steering:
         # delta_yaw, _, _ = self._get_delta_yaw()
@@ -966,6 +1004,7 @@ class CarlaEnv(gym.Env):
         #     return r1 + r2 + r3 - r_step + r_reach
         return r1 + r2 + r3 + r4 + r5 + r_step + r_reach
         # return r_speed + r_steer + r_lateral + r_step + r_reach
+
 
     def _get_future_wpt_angle(self, distances):
         angles = []
@@ -1106,6 +1145,14 @@ class CarlaEnv(gym.Env):
             return True
         #
         # if self.get_state().speed < 0.1:
+        #     return True
+
+        # If stop for a long time，停车时间过长
+        # speed = self.get_state().speed
+        # if speed < 1/2:
+        #     self.v_zero_time += 1
+        # if self.v_zero_time == 100:
+        #     self.hasStop = True
         #     return True
 
         # If out of lane，超出车道
