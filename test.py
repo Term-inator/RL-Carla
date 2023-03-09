@@ -298,11 +298,12 @@ class CTD3(object):
         if self.use_risk:
             cost = torch.FloatTensor(np.array(cost)).unsqueeze(1).to(device)
 
-        next_action = self.actor_target(next_state)
-        target_Q1 = self.critic1_target(next_state, next_action)
-        target_Q2 = self.critic2_target(next_state, next_action)
-        target_Q = torch.min(target_Q1, target_Q2)
-        target_Q = reward + ((1 - done) * self.gamma * target_Q).detach()
+        with torch.no_grad():
+            next_action = self.actor_target(next_state)
+            target_Q1 = self.critic1_target(next_state, next_action)
+            target_Q2 = self.critic2_target(next_state, next_action)
+            target_Q = torch.min(target_Q1, target_Q2)
+            target_Q = reward + ((1 - done) * self.gamma * target_Q).detach()
 
         current_Q1 = self.critic1(state, action)
         loss_Q1 = F.mse_loss(current_Q1, target_Q)
@@ -439,15 +440,15 @@ def main():
         #         'town': 'Town03',  # which town to simulate
         #         'pixor_size': 64,  # size of the pixor labels
 
-        'curiosity': ['state', 'image'][1],
+        'curiosity': ['state', 'image'][0],
 
-        'icm': True,
+        'icm': False,
         'icm_type': [ICMType.LINEAR, ICMType.LSTM, ICMType.DNN][2],
-        'icm_scale': 500,  # 500,
+        'icm_scale': [5e-2, 500][0],  # 500,
         'icm_only': False,
 
         'rnd': False,
-        'rnd_scale': 1.0,
+        'rnd_scale': [1e-4, 1.0][0],
         'rnd_only': False,
 
         'store_coordinate': True,
@@ -474,11 +475,13 @@ def main():
     #                'speed', 'angle', 'offset', 'e_speed', 'distance',
     #                'e_distance', 'safe_distance', 'light_state', 'sl_distance',
     #                'x', 'y', 'action_acc', 'action_steer', 'reach_dest']
-    df2_columns = ['velocity_t_x', 'velocity_t_y', 'accel_t_x', 'accel_t_y',
-                   'delta_yaw_t', 'dyaw_dt_t', 'lateral_dist_t',
-                   'action_last_accel', 'accel_last_steer',
-                   'future_angles_0', 'future_angles_1', 'future_angles_3',
-                   'speed', 'angle', 'offset',
+    # df2_columns = ['velocity_t_x', 'velocity_t_y', 'accel_t_x', 'accel_t_y',
+    #                'delta_yaw_t', 'dyaw_dt_t', 'lateral_dist_t',
+    #                'action_last_accel', 'accel_last_steer',
+    #                'future_angles_0', 'future_angles_1', 'future_angles_3',
+    #                'speed', 'angle', 'offset',
+    #                'x', 'y', 'action_acc', 'action_steer', 'reach_dest']
+    df2_columns = ['lateral_dist_t', 'delta_yaw_t', 'speed', 'vehicle_front',
                    'x', 'y', 'action_acc', 'action_steer', 'reach_dest']
     if params['use_risk']:
         df2_columns.append('cost')
@@ -508,12 +511,13 @@ def main():
 
     if params['icm']:
         # ICM
-        icm_module = ICM(params['icm_type'], curiosity_dim, action_dim).to(device)
+        icm_module = ICM(params['icm_type'], curiosity_dim, action_dim, hidden_dim=hidden_dim).to(device)
     elif params['rnd']:
         # RND
-        rnd_module = RNDModel(curiosity_dim, curiosity_dim).to(device)
+        rnd_module = RNDModel(curiosity_dim, curiosity_dim, hidden_dim=hidden_dim).to(device)
+    curiosity_scale = 0.0
 
-    max_steps = 10005
+    max_steps = 2001
     trajectorys = []
     rewards = []
     batch_size = 54
@@ -576,7 +580,7 @@ def main():
                     pred_next_state, pred_action = icm_module(camera_feature, next_camera_feature, action_tensor)
                     forward_loss = F.mse_loss(pred_next_state, next_camera_feature).to(device)
                 inverse_loss = F.cross_entropy(pred_action, action_tensor).to(device)
-                intrinsic_reward = params['icm_scale'] * forward_loss.item()
+                intrinsic_reward = curiosity_scale * forward_loss.item()
                 forward_loss.backward(retain_graph=True)
                 inverse_loss.backward(retain_graph=True)
             elif params['rnd']:
@@ -593,7 +597,7 @@ def main():
                     target_next_feature = rnd_module.target(next_camera_feature)
                     predict_next_feature = rnd_module.predictor(next_camera_feature)
                     forward_loss = (target_next_feature - predict_next_feature).pow(2).sum(1) / 2
-                intrinsic_reward = params['rnd_scale'] * forward_loss.item()
+                intrinsic_reward = curiosity_scale * forward_loss.item()
                 forward_loss.backward(retain_graph=True)
 
             if (params['icm'] and params['icm_only']) or (params['rnd'] and params['rnd_only']):
@@ -607,10 +611,12 @@ def main():
                 # if len(ddpg.replay_buffer) > batch_size:
                 if len(ddpg.replay_buffer) > 1000:
                     VAR *= .9995  # decay the action randomness
-                    # if params['icm']:
-                    #     params['icm_scale'] *= .9995
-                    # elif params['rnd']:
-                    #     params['rnd_scale'] *= .9995
+                    if params['icm']:
+                        if step % 100 == 0 and step != 0:
+                            curiosity_scale = params['icm_scale'] * 100 / max_steps
+                    elif params['rnd']:
+                        if step % 100 == 0 and step != 0:
+                            curiosity_scale = params['rnd_scale'] * 100 / max_steps
                     ddpg.update()
 
             if params['use_risk']:
@@ -639,12 +645,12 @@ def main():
         print("回合奖励为：{}, {}".format(episode_reward, episode_intrinsic_reward))
 
         # 保存轨迹
-        if step % 500 == 0 and step != 0:
+        if step % 100 == 0 and step != 0:
             save_trajectory(file_path, trajectorys, rewards, trajectory_columns=df2_columns, reward_columns=df1_columns,
                             index=str(step))
 
         # 保存模型
-        if step % 1000 == 0 and step != 0:
+        if step % 100 == 0 and step != 0:
             if params['code_mode'] == 'train':
                 ddpg.save('output_logger', index=str(step))
 

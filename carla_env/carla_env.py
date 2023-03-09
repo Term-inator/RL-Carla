@@ -184,7 +184,8 @@ class CarlaEnv(gym.Env):
             # 'birdeye': spaces.Box(low=0, high=255, shape=(self.obs_size, self.obs_size, 3), dtype=np.uint8),
             # 'state': spaces.Box(np.array([-2, -1, -5, 0]), np.array([2, 1, 30, 1]), dtype=np.float32),
             # 'state': spaces.Box(low=-50.0, high=50.0, shape=(21,), dtype=np.float32)
-            'state': spaces.Box(low=-50.0, high=50.0, shape=(15,), dtype=np.float32)
+            # 'state': spaces.Box(low=-50.0, high=50.0, shape=(15,), dtype=np.float32)
+            'state': spaces.Box(low=-50.0, high=50.0, shape=(4,), dtype=np.float32)
         }
         # if self.pixor:
         #     observation_space_dict.update({
@@ -356,8 +357,8 @@ class CarlaEnv(gym.Env):
             if self.code_mode == 'train':
                 # 如果处于训练模式下，则在指定路段的随机位置生成ego车辆
                 transform = self._get_random_position_between(start=self.start, dest=self.dest, transform=transform)
-            else:
-                transform = self.get_position(self.start, 60)  # Lane 修正
+            # else:
+            #     transform = self.get_position(self.start, 60)  # Lane 修正
             if self._try_spawn_ego_vehicle_at(
                     transform):  # and self._try_spawn_random_vehicle_at(self.get_position(self.start, 30)):
                 break
@@ -440,6 +441,7 @@ class CarlaEnv(gym.Env):
         self.isSpecialSpeed = False
         self.reachDest = False
         self.enter_junction = False
+        self.v_zero_time = 0
         self.hasStop = False
 
         self.obstacle_sensor = ObstacleDetector(self.ego)
@@ -841,12 +843,12 @@ class CarlaEnv(gym.Env):
         #     e_distance, safe_distance, light_state, sl_distance
         # ],
         #     axis=0)
-        info_vec = np.concatenate([
-            velocity_t, accel_t, delta_yaw_t, dyaw_dt_t, lateral_dist_t,
-            action_last, future_angles, speed, angle, offset
-        ],
-            axis=0)
-        info_vec = info_vec.squeeze()
+        # info_vec = np.concatenate([
+        #     velocity_t, accel_t, delta_yaw_t, dyaw_dt_t, lateral_dist_t,
+        #     action_last, future_angles, speed, angle, offset
+        # ],
+        #     axis=0)
+        # info_vec = info_vec.squeeze()
 
         # if self.pixor:
         #     ## Vehicle classification and regression maps (requires further normalization)
@@ -884,12 +886,12 @@ class CarlaEnv(gym.Env):
         #     # Pixor state, [x, y, cos(yaw), sin(yaw), speed]
         #     pixor_state = [ego_x, ego_y, np.cos(ego_yaw), np.sin(ego_yaw), speed]
 
-        obs = {
-            'camera': camera.astype(np.uint8),
-            # 'lidar': lidar.astype(np.uint8),
-            # 'birdeye': birdeye.astype(np.uint8),
-            'state': np.float32(info_vec),
-        }
+        # obs = {
+        #     'camera': camera.astype(np.uint8),
+        #     # 'lidar': lidar.astype(np.uint8),
+        #     # 'birdeye': birdeye.astype(np.uint8),
+        #     'state': np.float32(info_vec),
+        # }
         # if self.pixor:
         #     obs.update({
         #         'roadmap': roadmap.astype(np.uint8),
@@ -898,11 +900,84 @@ class CarlaEnv(gym.Env):
         #         'pixor_state': pixor_state,
         #     })
 
+        """ 获取观测数据
+        与车道线的横向距离，与车道线的夹角，当前速度，和前方车辆的距离
+        新
+        """
+        # 当前位置与朝向
+        ego_trans = self.ego.get_transform()
+        ego_x = ego_trans.location.x
+        ego_y = ego_trans.location.y
+        ego_yaw = ego_trans.rotation.yaw / 180 * np.pi
+
+        # ego车与车道线横向距离、与车道线的夹角
+        lateral_dis, w = get_preview_lane_dis(self.waypoints, ego_x, ego_y)
+        self.ego_lateral_dis = lateral_dis
+
+        # ego车与车道线朝向
+        delta_yaw = np.arcsin(np.cross(w, np.array(np.array([np.cos(ego_yaw), np.sin(ego_yaw)]))))
+
+        # ! 计算ego车的速度
+        v = self.ego.get_velocity()
+        speed = np.sqrt(v.x ** 2 + v.y ** 2)
+        state = np.array([lateral_dis, - delta_yaw, speed, self.vehicle_front])
+        obs = {
+            'camera': camera.astype(np.uint8),
+            'state': np.float32(state),
+        }
+
         return obs
 
     def _get_reward(self):
+        """奖励函数
+        3.0
+        """
+        # reward for speed tracking
+        v = self.ego.get_velocity()
+        speed = np.sqrt(v.x ** 2 + v.y ** 2)
+        # r_speed = -abs(speed - self.desired_speed)
+
+        # ! cost for collision
+        r_collision = 0
+        if len(self.collision_hist) > 0:
+            r_collision = -1
+
+        # ! cost for steering
+        # 方向打的太大会惩罚
+        r_steer = -self.ego.get_control().steer ** 2
+
+        # ! cost for out of lane
+        # 偏离车道中线会惩罚
+        ego_x, ego_y = get_pos(self.ego)
+        dis, w = get_lane_dis(self.waypoints, ego_x, ego_y)
+        # r_out = 0
+        # if abs(dis) > self.out_lane_thres:
+        # r_out = -1
+        # todo lane-keeping
+        r_lane_keeping = 1 - abs(dis)
+
+        # ! longitudinal speed
+        lspeed = np.array([v.x, v.y])
+        lspeed_lon = np.dot(lspeed, w)  # 沿车道方向的速度
+
+        # ! cost for too fast
+        # 速度太快也会被惩罚
+        r_fast = 0
+        if lspeed_lon > self.desired_speed:
+            r_fast = -1
+
+        # 停车时间过长惩罚
+        # r_stop = 0
+        # if self.hasStop:
+        #     r_stop = -1
+
+        # r = 200*r_collision + 1*lspeed_lon + 10*r_fast + 1*r_out + r_steer*5 + 0.2*r_lat - 0.1
+        r_cost = -0.1 + 200 * r_collision + 5 * r_steer + 10 * r_fast # + 200 * r_stop
+        r_reward = 0.1*lspeed_lon + 1*r_lane_keeping
+
+        return r_cost + r_reward
         '''
-        # reward new
+        # reward 2.0
         v = self.ego.get_velocity()
         speed = np.sqrt(v.x ** 2 + v.y ** 2)
         # r_speed = -abs(speed - self.desired_speed)
@@ -927,6 +1002,7 @@ class CarlaEnv(gym.Env):
             r_reach = 100.0
 
         return r_lane + r_speed + r_collision + r_reach + r_out_lane + r_stop
+        '''
         '''
         state = self.get_state()
         r1 = - (k1 * math.sin(math.radians(state.angle)) + k2 * abs(state.offset))
@@ -1004,6 +1080,7 @@ class CarlaEnv(gym.Env):
         #     return r1 + r2 + r3 - r_step + r_reach
         return r1 + r2 + r3 + r4 + r5 + r_step + r_reach
         # return r_speed + r_steer + r_lateral + r_step + r_reach
+    '''
 
 
     def _get_future_wpt_angle(self, distances):
@@ -1141,6 +1218,7 @@ class CarlaEnv(gym.Env):
         if self.time_step > self.max_time_episode:
             self.logger.debug('Time out! Episode cost %d steps in route %d.' %
                               (self.time_step, self.route_id))
+            print("Time out! Episode cost %d steps in route %d." % (self.time_step, self.route_id))
             self.isTimeOut = True
             return True
         #
@@ -1148,12 +1226,12 @@ class CarlaEnv(gym.Env):
         #     return True
 
         # If stop for a long time，停车时间过长
-        # speed = self.get_state().speed
-        # if speed < 1/2:
-        #     self.v_zero_time += 1
-        # if self.v_zero_time == 100:
-        #     self.hasStop = True
-        #     return True
+        speed = self.get_state().speed
+        if speed < 1/3:
+            self.v_zero_time += 1
+        if self.v_zero_time == 100:
+            self.hasStop = True
+            return True
 
         # If out of lane，超出车道
         if self.isOutOfLane:

@@ -9,7 +9,7 @@ class Flatten(nn.Module):
 
 
 class RNDModel(nn.Module):
-    def __init__(self, input_size, output_size):
+    def __init__(self, input_size, output_size, hidden_dim=256):
         super(RNDModel, self).__init__()
 
         self.input_size = input_size
@@ -38,11 +38,11 @@ class RNDModel(nn.Module):
             #     stride=1),
             # nn.LeakyReLU(),
             # Flatten(),
-            nn.Linear(feature_output, feature_output*3/2),
+            nn.Linear(feature_output, hidden_dim),
             nn.ReLU(),
-            nn.Linear(feature_output*3/2, feature_output*9/4),
+            nn.Linear(hidden_dim, int(hidden_dim*3/2)),
             nn.ReLU(),
-            nn.Linear(feature_output*9/4, output_size)
+            nn.Linear(int(hidden_dim*3/2), output_size)
         )
 
         # 随机网络
